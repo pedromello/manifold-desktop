@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 const ENVIRONMENTS: [&str; 3] = ["development", "staging", "production"];
-const DESKTOP_API_PATH: &str = "/api/v1/desktop";
+const API_PATH: &str = "/api/v1";
 const DEVELOPMENT_API_ORIGIN: &str = "http://localhost:3000";
 const PRODUCTION_API_ORIGIN: &str = "https://manifoldpowered.com";
 
@@ -21,7 +21,7 @@ fn validated_application_info(environment: String) -> Result<ApplicationInfo, St
         ));
     }
     let staging_origin = std::env::var("MANIFOLD_API_BASE_URL").ok();
-    let _api_base_url = desktop_api_base_url(&environment, staging_origin.as_deref())?;
+    let _api_base_url = api_base_url(&environment, staging_origin.as_deref())?;
     let (platform, architecture) = desktop_target()?;
     Ok(ApplicationInfo {
         version: env!("CARGO_PKG_VERSION"),
@@ -49,10 +49,7 @@ fn desktop_target() -> Result<(&'static str, &'static str), String> {
 /// Resolves the contract's API root inside the trusted process. Staging has no
 /// canonical public origin in the upstream contract and must be configured
 /// explicitly by the launch environment.
-fn desktop_api_base_url(
-    environment: &str,
-    staging_origin: Option<&str>,
-) -> Result<url::Url, String> {
+fn api_base_url(environment: &str, staging_origin: Option<&str>) -> Result<url::Url, String> {
     let origin = match environment {
         "development" => DEVELOPMENT_API_ORIGIN,
         "production" => PRODUCTION_API_ORIGIN,
@@ -67,8 +64,8 @@ fn desktop_api_base_url(
         return Err(format!("{environment} API origin must use HTTPS"));
     }
     origin
-        .join(&format!("{DESKTOP_API_PATH}/"))
-        .map_err(|error| format!("invalid desktop API URL: {error}"))
+        .join(&format!("{API_PATH}/"))
+        .map_err(|error| format!("invalid API URL: {error}"))
 }
 
 #[tauri::command]
@@ -106,22 +103,22 @@ mod tests {
     }
 
     #[test]
-    fn uses_the_versioned_desktop_api_root() {
+    fn uses_the_versioned_api_root() {
         assert_eq!(
-            desktop_api_base_url("production", None).unwrap().as_str(),
-            "https://manifoldpowered.com/api/v1/desktop/"
+            api_base_url("production", None).unwrap().as_str(),
+            "https://manifoldpowered.com/api/v1/"
         );
     }
 
     #[test]
     fn staging_requires_an_explicit_https_origin() {
-        assert!(desktop_api_base_url("staging", None).is_err());
-        assert!(desktop_api_base_url("staging", Some("http://staging.example.com")).is_err());
+        assert!(api_base_url("staging", None).is_err());
+        assert!(api_base_url("staging", Some("http://staging.example.com")).is_err());
         assert_eq!(
-            desktop_api_base_url("staging", Some("https://staging.example.com"))
+            api_base_url("staging", Some("https://staging.example.com"))
                 .unwrap()
                 .as_str(),
-            "https://staging.example.com/api/v1/desktop/"
+            "https://staging.example.com/api/v1/"
         );
     }
 }
