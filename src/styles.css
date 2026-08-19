@@ -1,0 +1,53 @@
+:root {
+  font-family: Inter, system-ui, sans-serif;
+  color: #e7e9ee;
+  background: #10131a;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+.app {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+}
+aside {
+  padding: 2rem 1.25rem;
+  background: #181d27;
+}
+aside strong {
+  font-size: 1.4rem;
+}
+nav {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 2rem;
+}
+nav a {
+  color: #aeb8ca;
+  padding: 0.7rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+}
+nav a.active,
+nav a:hover {
+  color: white;
+  background: #2b3445;
+}
+main {
+  padding: 3rem;
+}
+dl {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  max-width: 600px;
+}
+dt,
+dd {
+  padding: 0.5rem;
+  margin: 0;
+  border-bottom: 1px solid #303747;
+}
