@@ -31,7 +31,7 @@ The library is the main desktop surface for the MVP. It should expose the user's
 - running;
 - failed, with a recoverable error state.
 
-The desktop client should resolve only releases that are compatible with the current `Platform` and `Architecture` defined by the Desktop API v1 contract.
+The desktop client should resolve only releases that are compatible with the current `Platform` and `Architecture` defined by the distribution API v1 contract.
 
 ## Download and installation
 
@@ -83,7 +83,7 @@ This rule is scoped to **account + game**, not to the whole account. The desired
 
 The authoritative decision must be server-side. A local-only lock is insufficient because multiple devices cannot trust each other's local state.
 
-A future Desktop API version/extension should introduce a server-backed play-session or game-lease concept. A robust design is expected to include:
+A future API version or extension should introduce a server-backed play-session or game-lease concept. A robust design is expected to include:
 
 1. the desktop client requests permission to launch a specific game for the authenticated account and device;
 2. the server atomically creates a play session/lease only if no active session for that account + game already exists;

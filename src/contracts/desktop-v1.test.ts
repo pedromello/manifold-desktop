@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   createSessionRequestSchema,
+  desktopApiVersionSchema,
   desktopArchitectureSchema,
   desktopPlatformSchema,
   installManifestSchema,
+  requestOtpSchema,
 } from './desktop-v1';
 
-describe('Manifold Desktop API v1 contract', () => {
+describe('Manifold distribution API v1 contract', () => {
   it('uses the server target vocabulary', () => {
     expect(desktopPlatformSchema.parse('LINUX')).toBe('LINUX');
     expect(desktopArchitectureSchema.parse('X86_64')).toBe('X86_64');
@@ -14,22 +16,28 @@ describe('Manifold Desktop API v1 contract', () => {
   });
 
   it('requires clients to negotiate API v1 explicitly', () => {
+    expect(desktopApiVersionSchema.parse('1')).toBe('1');
+    expect(() => desktopApiVersionSchema.parse('2')).toThrow();
+  });
+
+  it('defines a passwordless OTP login flow', () => {
     expect(
-      createSessionRequestSchema.parse({
-        method: 'PASSWORD',
-        email: 'player@example.com',
-        password: 'secret',
-        api_version: '1',
-      }).api_version,
-    ).toBe('1');
-    expect(() =>
-      createSessionRequestSchema.parse({
-        method: 'OTP',
-        email: 'player@example.com',
-        otp: '123456',
-        api_version: '2',
-      }),
-    ).toThrow();
+      requestOtpSchema.safeParse({
+        login: 'player@example.com',
+      }).success,
+    ).toBe(true);
+    expect(
+      createSessionRequestSchema.safeParse({
+        login: 'player@example.com',
+        code: '123456',
+      }).success,
+    ).toBe(true);
+    expect(
+      createSessionRequestSchema.safeParse({
+        login: 'player@example.com',
+        code: 'password',
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects install paths that escape the installation root', () => {
