@@ -1,0 +1,91 @@
+name: Windows production build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-production-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows installers
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      VITE_APP_ENV: production
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust build files
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> src-tauri/target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Validate frontend
+        run: |
+          npm run format
+          npm run lint
+          npm run typecheck
+          npm test
+
+      - name: Validate Rust
+        run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+          cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings
+          cargo test --manifest-path src-tauri/Cargo.toml --locked
+
+      - name: Build production installers
+        run: npm run tauri build
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $bundleDirectory = "src-tauri/target/release/bundle"
+          $artifacts = Get-ChildItem -Path $bundleDirectory -Recurse -File |
+            Where-Object { $_.Extension -in ".exe", ".msi" }
+
+          if (-not $artifacts) {
+            throw "No Windows installer artifacts were produced."
+          }
+
+          $checksums = foreach ($artifact in $artifacts) {
+            $hash = (Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $relativePath = [IO.Path]::GetRelativePath($bundleDirectory, $artifact.FullName).Replace("\\", "/")
+            "$hash  $relativePath"
+          }
+
+          $checksums | Set-Content -LiteralPath "$bundleDirectory/SHA256SUMS.txt" -Encoding utf8
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifold-desktop-windows-${{ github.ref_name }}-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.msi
+            src-tauri/target/release/bundle/SHA256SUMS.txt
