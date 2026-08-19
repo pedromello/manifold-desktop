@@ -112,10 +112,18 @@ export const releaseSummarySchema = z.object({
   manifest_schema_version: manifestSchemaVersionSchema,
 });
 
+export const libraryOutletSchema = z.object({
+  id: identifierSchema,
+  name: z.string().min(1),
+  slug: z.string().min(1),
+  logo_url: z.url().nullable(),
+});
+
 export const libraryItemSchema = z.object({
   game: catalogGameSchema,
   acquired_at: timestampSchema,
   latest_compatible_release: releaseSummarySchema.nullable(),
+  outlet: libraryOutletSchema.nullable(),
 });
 
 const relativePathSchema = z
@@ -173,6 +181,7 @@ export type RequestOtpRequest = z.infer<typeof requestOtpSchema>;
 export type OtpRequested = z.infer<typeof otpRequestedSchema>;
 export type DesktopSession = z.infer<typeof sessionSchema>;
 export type CatalogGame = z.infer<typeof catalogGameSchema>;
+export type LibraryOutlet = z.infer<typeof libraryOutletSchema>;
 export type LibraryItem = z.infer<typeof libraryItemSchema>;
 export type ReleaseSummary = z.infer<typeof releaseSummarySchema>;
 export type InstallManifest = z.infer<typeof installManifestSchema>;

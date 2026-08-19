@@ -5,6 +5,7 @@ import {
   desktopArchitectureSchema,
   desktopPlatformSchema,
   installManifestSchema,
+  libraryOutletSchema,
   requestOtpSchema,
 } from './desktop-v1';
 
@@ -40,6 +41,16 @@ describe('Manifold distribution API v1 contract', () => {
     ).toBe(false);
   });
 
+  it('attributes a library item to its acquisition outlet', () => {
+    expect(
+      libraryOutletSchema.parse({
+        id: 'e8b521ce-ed36-4d5a-86ab-bc96e151a504',
+        name: 'Strategos Void',
+        slug: 'strategos-void',
+        logo_url: null,
+      }).name,
+    ).toBe('Strategos Void');
+  });
   it('rejects install paths that escape the installation root', () => {
     const manifest = {
       schema_version: '1',
