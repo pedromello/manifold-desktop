@@ -1,0 +1,850 @@
+use futures_util::StreamExt;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    fs::{self, File},
+    io::{Read, Write},
+    path::{Component, Path, PathBuf},
+    process::Command,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::io::AsyncWriteExt;
+
+const REGISTRY_FILE: &str = "installations.json";
+const PREFERENCES_FILE: &str = "installation-preferences.json";
+const MAX_ARCHIVE_FILES: usize = 100_000;
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReleaseTarget {
+    pub platform: String,
+    pub architecture: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReleaseSummary {
+    pub id: String,
+    pub version: String,
+    pub release_number: u64,
+    pub published_at: String,
+    pub artifact_id: String,
+    pub target: ReleaseTarget,
+    pub compressed_size_bytes: String,
+    pub installed_size_bytes: String,
+    pub sha256: String,
+    pub manifest_schema_version: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InstallManifest {
+    pub schema_version: String,
+    pub release_id: String,
+    pub artifact_id: String,
+    pub entrypoint: String,
+    #[serde(default)]
+    pub launch_arguments: Vec<String>,
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub executables: Vec<String>,
+    #[serde(default)]
+    pub environment: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DownloadAuthorization {
+    pub artifact_id: String,
+    pub url: String,
+    pub expires_at: String,
+    pub total_size_bytes: String,
+    pub sha256: String,
+    pub etag: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DistributionPlan {
+    pub game_slug: String,
+    pub release: ReleaseSummary,
+    pub manifest: InstallManifest,
+    pub download: DownloadAuthorization,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledGame {
+    pub game_slug: String,
+    pub title: String,
+    pub version: String,
+    pub release_id: String,
+    pub install_directory: String,
+    pub entrypoint: String,
+    pub installed_at: String,
+    #[serde(default)]
+    pub launch_arguments: Vec<String>,
+    pub working_directory: Option<String>,
+    #[serde(default)]
+    pub environment: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+struct StoredPreferences {
+    install_directory: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallationPreferences {
+    install_directory: Option<String>,
+    default_install_directory: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallationProgress {
+    game_slug: String,
+    title: String,
+    phase: String,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    version: Option<String>,
+    error: Option<String>,
+}
+
+pub struct InstallationManager {
+    cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+impl InstallationManager {
+    pub fn new() -> Self {
+        Self {
+            cancellations: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn begin(&self, game_slug: &str) -> Result<Arc<AtomicBool>, String> {
+        let mut jobs = self
+            .cancellations
+            .lock()
+            .map_err(|_| "the installation manager is unavailable".to_string())?;
+        if jobs.contains_key(game_slug) {
+            return Err("an installation is already running for this game".into());
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        jobs.insert(game_slug.to_string(), cancellation.clone());
+        Ok(cancellation)
+    }
+
+    fn finish(&self, game_slug: &str) {
+        if let Ok(mut jobs) = self.cancellations.lock() {
+            jobs.remove(game_slug);
+        }
+    }
+
+    fn cancel(&self, game_slug: &str) -> Result<(), String> {
+        let jobs = self
+            .cancellations
+            .lock()
+            .map_err(|_| "the installation manager is unavailable".to_string())?;
+        let cancellation = jobs
+            .get(game_slug)
+            .ok_or("no active installation was found for this game")?;
+        cancellation.store(true, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+pub fn validate_game_slug(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 120
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err("invalid game slug".into());
+    }
+    Ok(())
+}
+
+fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
+    if value.is_empty() || value.starts_with('/') || value.starts_with('\\') || value.contains(':')
+    {
+        return Err(format!("unsafe installation path: {value}"));
+    }
+    let normalized = value.replace('\\', "/");
+    let path = PathBuf::from(normalized);
+    if path
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!("unsafe installation path: {value}"));
+    }
+    Ok(path)
+}
+
+fn validate_plan(plan: &DistributionPlan) -> Result<(), String> {
+    validate_game_slug(&plan.game_slug)?;
+    if plan.release.id != plan.manifest.release_id {
+        return Err("manifest release does not match the resolved release".into());
+    }
+    if plan.release.artifact_id != plan.manifest.artifact_id
+        || plan.release.artifact_id != plan.download.artifact_id
+    {
+        return Err("artifact identifiers do not match".into());
+    }
+    if plan.release.sha256 != plan.download.sha256 {
+        return Err("artifact checksums do not match".into());
+    }
+    if plan.release.manifest_schema_version != "1" || plan.manifest.schema_version != "1" {
+        return Err("unsupported install manifest version".into());
+    }
+    if plan.download.sha256.len() != 64
+        || !plan
+            .download
+            .sha256
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+    {
+        return Err("invalid artifact SHA-256".into());
+    }
+    let url = url::Url::parse(&plan.download.url)
+        .map_err(|error| format!("invalid artifact URL: {error}"))?;
+    if url.scheme() != "https" {
+        return Err("artifact downloads must use HTTPS".into());
+    }
+    safe_relative_path(&plan.manifest.entrypoint)?;
+    if let Some(directory) = &plan.manifest.working_directory {
+        safe_relative_path(directory)?;
+    }
+    for executable in &plan.manifest.executables {
+        safe_relative_path(executable)?;
+    }
+    Ok(())
+}
+
+fn app_data_directory(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map_err(|error| format!("could not resolve application data directory: {error}"))
+}
+
+fn read_json_or_default<T>(path: &Path) -> Result<T, String>
+where
+    T: DeserializeOwned + Default,
+{
+    if !path.exists() {
+        return Ok(T::default());
+    }
+    let bytes =
+        fs::read(path).map_err(|error| format!("could not read {}: {error}", path.display()))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("could not parse {}: {error}", path.display()))
+}
+
+fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    let temporary = path.with_extension("tmp");
+    let bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("could not serialize local state: {error}"))?;
+    {
+        let mut file = File::create(&temporary)
+            .map_err(|error| format!("could not create {}: {error}", temporary.display()))?;
+        file.write_all(&bytes)
+            .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("could not sync {}: {error}", temporary.display()))?;
+    }
+    let backup = path.with_extension("bak");
+    if backup.exists() {
+        fs::remove_file(&backup)
+            .map_err(|error| format!("could not clear {}: {error}", backup.display()))?;
+    }
+    if path.exists() {
+        fs::rename(path, &backup)
+            .map_err(|error| format!("could not stage {}: {error}", path.display()))?;
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, path);
+        }
+        return Err(format!("could not finalize {}: {error}", path.display()));
+    }
+    if backup.exists() {
+        let _ = fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+fn append_install_log(app: &AppHandle, game_slug: &str, outcome: &str) {
+    let Ok(directory) = app_data_directory(app) else {
+        return;
+    };
+    let _ = fs::create_dir_all(&directory);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(directory.join("installation.log"))
+    {
+        let safe_outcome = outcome.replace(['\r', '\n'], " ");
+        let _ = writeln!(file, "{timestamp} {game_slug} {safe_outcome}");
+    }
+}
+
+fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_directory(app)?.join(PREFERENCES_FILE))
+}
+
+fn registry_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_directory(app)?.join(REGISTRY_FILE))
+}
+
+fn default_install_root(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_directory(app)?.join("games"))
+}
+
+fn configured_install_root(app: &AppHandle) -> Result<PathBuf, String> {
+    let preferences: StoredPreferences = read_json_or_default(&preferences_path(app)?)?;
+    match preferences.install_directory {
+        Some(directory) => {
+            let path = PathBuf::from(directory);
+            if !path.is_absolute() || path.parent().is_none() {
+                return Err("choose an absolute folder below the filesystem root".into());
+            }
+            Ok(path)
+        }
+        None => default_install_root(app),
+    }
+}
+
+fn emit_progress(
+    app: &AppHandle,
+    plan: &DistributionPlan,
+    title: &str,
+    phase: &str,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    error: Option<String>,
+) {
+    let _ = app.emit(
+        "installation-progress",
+        InstallationProgress {
+            game_slug: plan.game_slug.clone(),
+            title: title.to_string(),
+            phase: phase.to_string(),
+            downloaded_bytes,
+            total_bytes,
+            version: Some(plan.release.version.clone()),
+            error,
+        },
+    );
+}
+
+async fn download_artifact(
+    app: &AppHandle,
+    title: &str,
+    plan: &DistributionPlan,
+    cancellation: &AtomicBool,
+) -> Result<PathBuf, String> {
+    let total = plan
+        .download
+        .total_size_bytes
+        .parse::<u64>()
+        .map_err(|_| "invalid artifact size".to_string())?;
+    let download_directory = app_data_directory(app)?.join("downloads");
+    tokio::fs::create_dir_all(&download_directory)
+        .await
+        .map_err(|error| format!("could not create download directory: {error}"))?;
+    let part_path = download_directory.join(format!("{}.part", plan.download.artifact_id));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60 * 30))
+        .build()
+        .map_err(|error| format!("could not initialize downloader: {error}"))?;
+    download_to_file(
+        &client,
+        &plan.download.url,
+        &part_path,
+        total,
+        plan.download.etag.as_deref(),
+        cancellation,
+        |downloaded| {
+            emit_progress(app, plan, title, "downloading", downloaded, total, None);
+        },
+    )
+    .await?;
+    Ok(part_path)
+}
+
+async fn download_to_file<F>(
+    client: &reqwest::Client,
+    url: &str,
+    part_path: &Path,
+    total: u64,
+    etag: Option<&str>,
+    cancellation: &AtomicBool,
+    mut on_progress: F,
+) -> Result<(), String>
+where
+    F: FnMut(u64),
+{
+    let existing = tokio::fs::metadata(part_path)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if existing == total {
+        on_progress(existing);
+        return Ok(());
+    }
+    let mut request = client.get(url);
+    if existing > 0 && existing < total {
+        request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+        if let Some(etag) = etag {
+            request = request.header(reqwest::header::IF_RANGE, etag);
+        }
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| format!("artifact download failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("artifact server returned {}", response.status()));
+    }
+    let resumed = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let mut downloaded = if resumed { existing } else { 0 };
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(resumed)
+        .truncate(!resumed)
+        .open(part_path)
+        .await
+        .map_err(|error| format!("could not open partial download: {error}"))?;
+    let mut stream = response.bytes_stream();
+    on_progress(downloaded);
+    while let Some(chunk) = stream.next().await {
+        if cancellation.load(Ordering::Relaxed) {
+            return Err("installation cancelled".into());
+        }
+        let chunk = chunk.map_err(|error| format!("artifact download interrupted: {error}"))?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| format!("could not save artifact: {error}"))?;
+        downloaded += chunk.len() as u64;
+        on_progress(downloaded);
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("could not flush artifact: {error}"))?;
+    if downloaded != total {
+        return Err(format!(
+            "artifact size mismatch: expected {total} bytes, received {downloaded}"
+        ));
+    }
+    Ok(())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = File::open(path)
+        .map_err(|error| format!("could not open artifact for verification: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 128];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|error| format!("could not verify artifact: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn extract_zip(archive_path: &Path, destination: &Path, maximum_size: u64) -> Result<(), String> {
+    let file = File::open(archive_path)
+        .map_err(|error| format!("could not open artifact archive: {error}"))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|error| format!("artifact is not a valid ZIP archive: {error}"))?;
+    if archive.len() > MAX_ARCHIVE_FILES {
+        return Err("artifact contains too many files".into());
+    }
+    let mut expanded_size = 0_u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| format!("could not read ZIP entry: {error}"))?;
+        if entry
+            .unix_mode()
+            .is_some_and(|mode| mode & 0o170000 == 0o120000)
+        {
+            return Err("symbolic links are not allowed in game artifacts".into());
+        }
+        let enclosed = entry
+            .enclosed_name()
+            .ok_or("artifact contains an unsafe path")?
+            .to_path_buf();
+        let relative = safe_relative_path(&enclosed.to_string_lossy())?;
+        let output = destination.join(relative);
+        expanded_size = expanded_size
+            .checked_add(entry.size())
+            .ok_or("artifact expanded size overflow")?;
+        if expanded_size > maximum_size {
+            return Err("artifact exceeds its declared installed size".into());
+        }
+        if entry.is_dir() {
+            fs::create_dir_all(&output)
+                .map_err(|error| format!("could not create {}: {error}", output.display()))?;
+            continue;
+        }
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+        }
+        let mut output_file = File::create(&output)
+            .map_err(|error| format!("could not create {}: {error}", output.display()))?;
+        std::io::copy(&mut entry, &mut output_file)
+            .map_err(|error| format!("could not extract {}: {error}", output.display()))?;
+    }
+    Ok(())
+}
+
+fn install_archive(
+    app: &AppHandle,
+    title: &str,
+    plan: &DistributionPlan,
+    archive_path: &Path,
+) -> Result<InstalledGame, String> {
+    let install_root = configured_install_root(app)?;
+    fs::create_dir_all(&install_root)
+        .map_err(|error| format!("could not create installation root: {error}"))?;
+    let stage = install_root.join(format!(".{}.staging", plan.game_slug));
+    let destination = install_root.join(&plan.game_slug);
+    let backup = install_root.join(format!(".{}.backup", plan.game_slug));
+    if stage.exists() {
+        fs::remove_dir_all(&stage)
+            .map_err(|error| format!("could not clear staging directory: {error}"))?;
+    }
+    fs::create_dir_all(&stage)
+        .map_err(|error| format!("could not create staging directory: {error}"))?;
+    let declared_size = plan
+        .release
+        .installed_size_bytes
+        .parse::<u64>()
+        .map_err(|_| "invalid installed size".to_string())?;
+    let maximum_size = declared_size.saturating_add(declared_size / 20).max(1);
+    if let Err(error) = extract_zip(archive_path, &stage, maximum_size) {
+        let _ = fs::remove_dir_all(&stage);
+        return Err(error);
+    }
+    let entrypoint = safe_relative_path(&plan.manifest.entrypoint)?;
+    if !stage.join(&entrypoint).is_file() {
+        let _ = fs::remove_dir_all(&stage);
+        return Err("artifact does not contain the declared entrypoint".into());
+    }
+    if backup.exists() {
+        fs::remove_dir_all(&backup)
+            .map_err(|error| format!("could not clear installation backup: {error}"))?;
+    }
+    if destination.exists() {
+        fs::rename(&destination, &backup)
+            .map_err(|error| format!("could not stage existing installation: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&stage, &destination) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, &destination);
+        }
+        return Err(format!("could not activate installation: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_dir_all(&backup);
+    }
+    let installed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "system clock is invalid".to_string())?
+        .as_secs()
+        .to_string();
+    let installed = InstalledGame {
+        game_slug: plan.game_slug.clone(),
+        title: title.to_string(),
+        version: plan.release.version.clone(),
+        release_id: plan.release.id.clone(),
+        install_directory: destination.to_string_lossy().into_owned(),
+        entrypoint: plan.manifest.entrypoint.clone(),
+        installed_at,
+        launch_arguments: plan.manifest.launch_arguments.clone(),
+        working_directory: plan.manifest.working_directory.clone(),
+        environment: plan.manifest.environment.clone(),
+    };
+    let path = registry_path(app)?;
+    let mut registry: Vec<InstalledGame> = read_json_or_default(&path)?;
+    registry.retain(|item| item.game_slug != installed.game_slug);
+    registry.push(installed.clone());
+    write_json_atomic(&path, &registry)?;
+    Ok(installed)
+}
+
+async fn install_game_inner(
+    app: &AppHandle,
+    title: &str,
+    plan: &DistributionPlan,
+    cancellation: &AtomicBool,
+) -> Result<InstalledGame, String> {
+    validate_plan(plan)?;
+    let total = plan.download.total_size_bytes.parse::<u64>().unwrap_or(0);
+    let archive = download_artifact(app, title, plan, cancellation).await?;
+    emit_progress(app, plan, title, "verifying", total, total, None);
+    let archive_for_hash = archive.clone();
+    let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&archive_for_hash))
+        .await
+        .map_err(|error| format!("artifact verification task failed: {error}"))??;
+    if actual_hash != plan.download.sha256 {
+        let _ = tokio::fs::remove_file(&archive).await;
+        return Err("artifact integrity verification failed".into());
+    }
+    if cancellation.load(Ordering::Relaxed) {
+        return Err("installation cancelled".into());
+    }
+    emit_progress(app, plan, title, "installing", total, total, None);
+    let app_for_install = app.clone();
+    let title_for_install = title.to_string();
+    let plan_for_install = plan.clone();
+    let archive_for_install = archive.clone();
+    let installed = tokio::task::spawn_blocking(move || {
+        install_archive(
+            &app_for_install,
+            &title_for_install,
+            &plan_for_install,
+            &archive_for_install,
+        )
+    })
+    .await
+    .map_err(|error| format!("installation task failed: {error}"))??;
+    let _ = tokio::fs::remove_file(&archive).await;
+    Ok(installed)
+}
+
+#[tauri::command]
+pub async fn install_game(
+    app: AppHandle,
+    manager: tauri::State<'_, InstallationManager>,
+    title: String,
+    plan: DistributionPlan,
+) -> Result<InstalledGame, String> {
+    let cancellation = manager.begin(&plan.game_slug)?;
+    append_install_log(&app, &plan.game_slug, "started");
+    let result = install_game_inner(&app, &title, &plan, &cancellation).await;
+    manager.finish(&plan.game_slug);
+    match &result {
+        Ok(_) => {
+            append_install_log(&app, &plan.game_slug, "installed");
+            emit_progress(&app, &plan, &title, "installed", 1, 1, None)
+        }
+        Err(error) if error == "installation cancelled" => {
+            append_install_log(&app, &plan.game_slug, "cancelled");
+            emit_progress(&app, &plan, &title, "cancelled", 0, 0, None)
+        }
+        Err(error) => {
+            append_install_log(&app, &plan.game_slug, &format!("failed: {error}"));
+            emit_progress(&app, &plan, &title, "failed", 0, 0, Some(error.clone()))
+        }
+    }
+    result
+}
+
+#[tauri::command]
+pub fn cancel_installation(
+    manager: tauri::State<'_, InstallationManager>,
+    game_slug: String,
+) -> Result<(), String> {
+    validate_game_slug(&game_slug)?;
+    manager.cancel(&game_slug)
+}
+
+#[tauri::command]
+pub fn list_installations(app: AppHandle) -> Result<Vec<InstalledGame>, String> {
+    let path = registry_path(&app)?;
+    let mut registry: Vec<InstalledGame> = read_json_or_default(&path)?;
+    let original_length = registry.len();
+    registry.retain(|game| {
+        let root = PathBuf::from(&game.install_directory);
+        safe_relative_path(&game.entrypoint)
+            .map(|entrypoint| root.join(entrypoint).is_file())
+            .unwrap_or(false)
+    });
+    if registry.len() != original_length {
+        write_json_atomic(&path, &registry)?;
+    }
+    Ok(registry)
+}
+
+#[tauri::command]
+pub fn launch_game(app: AppHandle, game_slug: String) -> Result<(), String> {
+    validate_game_slug(&game_slug)?;
+    let registry: Vec<InstalledGame> = read_json_or_default(&registry_path(&app)?)?;
+    let game = registry
+        .into_iter()
+        .find(|item| item.game_slug == game_slug)
+        .ok_or("game is not installed")?;
+    let root = PathBuf::from(&game.install_directory);
+    let entrypoint = root.join(safe_relative_path(&game.entrypoint)?);
+    if !entrypoint.is_file() {
+        return Err("the installed game executable is missing".into());
+    }
+    let working_directory = match game.working_directory {
+        Some(directory) => root.join(safe_relative_path(&directory)?),
+        None => root.clone(),
+    };
+    let mut command = Command::new(entrypoint);
+    command
+        .args(game.launch_arguments)
+        .envs(game.environment)
+        .current_dir(working_directory)
+        .spawn()
+        .map_err(|error| format!("could not launch game: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_installation_preferences(app: AppHandle) -> Result<InstallationPreferences, String> {
+    let stored: StoredPreferences = read_json_or_default(&preferences_path(&app)?)?;
+    Ok(InstallationPreferences {
+        install_directory: stored.install_directory,
+        default_install_directory: default_install_root(&app)?.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub fn set_installation_preferences(
+    app: AppHandle,
+    install_directory: Option<String>,
+) -> Result<InstallationPreferences, String> {
+    let install_directory = install_directory
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(directory) = &install_directory {
+        let path = PathBuf::from(directory);
+        if !path.is_absolute() || path.parent().is_none() {
+            return Err("choose an absolute folder below the filesystem root".into());
+        }
+        fs::create_dir_all(&path)
+            .map_err(|error| format!("could not create installation directory: {error}"))?;
+    }
+    write_json_atomic(
+        &preferences_path(&app)?,
+        &StoredPreferences {
+            install_directory: install_directory.clone(),
+        },
+    )?;
+    Ok(InstallationPreferences {
+        install_directory,
+        default_install_directory: default_install_root(&app)?.to_string_lossy().into_owned(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn rejects_traversal_and_absolute_manifest_paths() {
+        assert!(safe_relative_path("game.exe").is_ok());
+        assert!(safe_relative_path("bin/game.exe").is_ok());
+        assert!(safe_relative_path("../game.exe").is_err());
+        assert!(safe_relative_path("bin/../../game.exe").is_err());
+        assert!(safe_relative_path("C:\\game.exe").is_err());
+        assert!(safe_relative_path("/game.exe").is_err());
+    }
+
+    #[test]
+    fn accepts_only_filesystem_safe_game_slugs() {
+        assert!(validate_game_slug("capyvarias-2").is_ok());
+        assert!(validate_game_slug("../../windows").is_err());
+        assert!(validate_game_slug("").is_err());
+    }
+
+    #[test]
+    fn writes_local_state_atomically() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("state.json");
+        write_json_atomic(&path, &vec!["one", "two"]).unwrap();
+        let value: Vec<String> = read_json_or_default(&path).unwrap();
+        assert_eq!(value, vec!["one", "two"]);
+        assert!(!path.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn computes_sha256_for_download_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.zip");
+        fs::write(&path, b"manifold").unwrap();
+        assert_eq!(
+            sha256_file(&path).unwrap(),
+            "4dd5b6e2bf3bfd4f6a273018b06a65680ef9631f8e0156e6ddd6a06ca0510172"
+        );
+    }
+
+    #[tokio::test]
+    async fn resumes_an_interrupted_download_with_a_range_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0_u8; 2048];
+            let count = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(request.to_ascii_lowercase().contains("range: bytes=4-"));
+            stream
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfold")
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        fs::write(&path, b"mani").unwrap();
+        let client = reqwest::Client::new();
+        let cancellation = AtomicBool::new(false);
+        download_to_file(
+            &client,
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"manifold");
+    }
+
+    #[test]
+    fn rejects_archive_entries_that_escape_the_staging_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("malicious.zip");
+        let file = File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        archive
+            .start_file("../outside.exe", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"not executable").unwrap();
+        archive.finish().unwrap();
+        let destination = directory.path().join("staging");
+        fs::create_dir_all(&destination).unwrap();
+        assert!(extract_zip(&archive_path, &destination, 1024).is_err());
+        assert!(!directory.path().join("outside.exe").exists());
+    }
+}

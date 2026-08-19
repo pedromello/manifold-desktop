@@ -3,5 +3,5 @@
   "identifier": "main-window",
   "description": "Only Tauri core window functionality required by the main UI.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "dialog:allow-open"]
 }
