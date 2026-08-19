@@ -396,6 +396,9 @@ async fn download_to_file<F>(
 where
     F: FnMut(u64),
 {
+    if cancellation.load(Ordering::Relaxed) {
+        return Err("installation cancelled".into());
+    }
     let existing = tokio::fs::metadata(part_path)
         .await
         .map(|metadata| metadata.len())
@@ -469,6 +472,13 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", digest.finalize()))
 }
 
+fn verify_archive_checksum(path: &Path, expected: &str) -> Result<(), String> {
+    if sha256_file(path)? != expected {
+        return Err("artifact integrity verification failed".into());
+    }
+    Ok(())
+}
+
 fn extract_zip(archive_path: &Path, destination: &Path, maximum_size: u64) -> Result<(), String> {
     let file = File::open(archive_path)
         .map_err(|error| format!("could not open artifact archive: {error}"))?;
@@ -517,14 +527,53 @@ fn extract_zip(archive_path: &Path, destination: &Path, maximum_size: u64) -> Re
     Ok(())
 }
 
-fn install_archive(
-    app: &AppHandle,
+fn extract_and_validate_archive(
+    archive_path: &Path,
+    destination: &Path,
+    maximum_size: u64,
+    entrypoint: &str,
+) -> Result<(), String> {
+    extract_zip(archive_path, destination, maximum_size)?;
+    let entrypoint = safe_relative_path(entrypoint)?;
+    if !destination.join(entrypoint).is_file() {
+        return Err("artifact does not contain the declared entrypoint".into());
+    }
+    Ok(())
+}
+
+fn activate_staged_installation(
+    stage: &Path,
+    destination: &Path,
+    backup: &Path,
+) -> Result<(), String> {
+    if backup.exists() {
+        fs::remove_dir_all(backup)
+            .map_err(|error| format!("could not clear installation backup: {error}"))?;
+    }
+    if destination.exists() {
+        fs::rename(destination, backup)
+            .map_err(|error| format!("could not stage existing installation: {error}"))?;
+    }
+    if let Err(error) = fs::rename(stage, destination) {
+        if backup.exists() {
+            let _ = fs::rename(backup, destination);
+        }
+        return Err(format!("could not activate installation: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_dir_all(backup);
+    }
+    Ok(())
+}
+
+fn install_archive_at(
+    install_root: &Path,
+    registry_file: &Path,
     title: &str,
     plan: &DistributionPlan,
     archive_path: &Path,
 ) -> Result<InstalledGame, String> {
-    let install_root = configured_install_root(app)?;
-    fs::create_dir_all(&install_root)
+    fs::create_dir_all(install_root)
         .map_err(|error| format!("could not create installation root: {error}"))?;
     let stage = install_root.join(format!(".{}.staging", plan.game_slug));
     let destination = install_root.join(&plan.game_slug);
@@ -541,32 +590,16 @@ fn install_archive(
         .parse::<u64>()
         .map_err(|_| "invalid installed size".to_string())?;
     let maximum_size = declared_size.saturating_add(declared_size / 20).max(1);
-    if let Err(error) = extract_zip(archive_path, &stage, maximum_size) {
+    if let Err(error) = extract_and_validate_archive(
+        archive_path,
+        &stage,
+        maximum_size,
+        &plan.manifest.entrypoint,
+    ) {
         let _ = fs::remove_dir_all(&stage);
         return Err(error);
     }
-    let entrypoint = safe_relative_path(&plan.manifest.entrypoint)?;
-    if !stage.join(&entrypoint).is_file() {
-        let _ = fs::remove_dir_all(&stage);
-        return Err("artifact does not contain the declared entrypoint".into());
-    }
-    if backup.exists() {
-        fs::remove_dir_all(&backup)
-            .map_err(|error| format!("could not clear installation backup: {error}"))?;
-    }
-    if destination.exists() {
-        fs::rename(&destination, &backup)
-            .map_err(|error| format!("could not stage existing installation: {error}"))?;
-    }
-    if let Err(error) = fs::rename(&stage, &destination) {
-        if backup.exists() {
-            let _ = fs::rename(&backup, &destination);
-        }
-        return Err(format!("could not activate installation: {error}"));
-    }
-    if backup.exists() {
-        let _ = fs::remove_dir_all(&backup);
-    }
+    activate_staged_installation(&stage, &destination, &backup)?;
     let installed_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "system clock is invalid".to_string())?
@@ -584,12 +617,27 @@ fn install_archive(
         working_directory: plan.manifest.working_directory.clone(),
         environment: plan.manifest.environment.clone(),
     };
-    let path = registry_path(app)?;
-    let mut registry: Vec<InstalledGame> = read_json_or_default(&path)?;
+    let mut registry: Vec<InstalledGame> = read_json_or_default(registry_file)?;
     registry.retain(|item| item.game_slug != installed.game_slug);
     registry.push(installed.clone());
-    write_json_atomic(&path, &registry)?;
+    write_json_atomic(registry_file, &registry)?;
     Ok(installed)
+}
+
+fn install_archive(
+    app: &AppHandle,
+    title: &str,
+    plan: &DistributionPlan,
+    archive_path: &Path,
+) -> Result<InstalledGame, String> {
+    let install_root = configured_install_root(app)?;
+    install_archive_at(
+        &install_root,
+        &registry_path(app)?,
+        title,
+        plan,
+        archive_path,
+    )
 }
 
 async fn install_game_inner(
@@ -603,12 +651,15 @@ async fn install_game_inner(
     let archive = download_artifact(app, title, plan, cancellation).await?;
     emit_progress(app, plan, title, "verifying", total, total, None);
     let archive_for_hash = archive.clone();
-    let actual_hash = tokio::task::spawn_blocking(move || sha256_file(&archive_for_hash))
-        .await
-        .map_err(|error| format!("artifact verification task failed: {error}"))??;
-    if actual_hash != plan.download.sha256 {
+    let expected_hash = plan.download.sha256.clone();
+    let verification = tokio::task::spawn_blocking(move || {
+        verify_archive_checksum(&archive_for_hash, &expected_hash)
+    })
+    .await
+    .map_err(|error| format!("artifact verification task failed: {error}"))?;
+    if let Err(error) = verification {
         let _ = tokio::fs::remove_file(&archive).await;
-        return Err("artifact integrity verification failed".into());
+        return Err(error);
     }
     if cancellation.load(Ordering::Relaxed) {
         return Err("installation cancelled".into());
@@ -756,6 +807,58 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    fn test_plan(entrypoint: &str, installed_size: u64) -> DistributionPlan {
+        let sha256 = "0".repeat(64);
+        DistributionPlan {
+            game_slug: "test-game".into(),
+            release: ReleaseSummary {
+                id: "release-1".into(),
+                version: "1.0.0".into(),
+                release_number: 1,
+                published_at: "2026-08-19T00:00:00Z".into(),
+                artifact_id: "artifact-1".into(),
+                target: ReleaseTarget {
+                    platform: "WINDOWS".into(),
+                    architecture: "X86_64".into(),
+                },
+                compressed_size_bytes: "1".into(),
+                installed_size_bytes: installed_size.to_string(),
+                sha256: sha256.clone(),
+                manifest_schema_version: "1".into(),
+            },
+            manifest: InstallManifest {
+                schema_version: "1".into(),
+                release_id: "release-1".into(),
+                artifact_id: "artifact-1".into(),
+                entrypoint: entrypoint.into(),
+                launch_arguments: Vec::new(),
+                working_directory: None,
+                executables: vec![entrypoint.into()],
+                environment: HashMap::new(),
+            },
+            download: DownloadAuthorization {
+                artifact_id: "artifact-1".into(),
+                url: "https://downloads.example.test/artifact.zip".into(),
+                expires_at: "2026-08-19T01:00:00Z".into(),
+                total_size_bytes: "1".into(),
+                sha256,
+                etag: None,
+            },
+        }
+    }
+
+    fn write_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = File::create(path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        for (name, contents) in entries {
+            archive
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(contents).unwrap();
+        }
+        archive.finish().unwrap();
+    }
+
     #[test]
     fn rejects_traversal_and_absolute_manifest_paths() {
         assert!(safe_relative_path("game.exe").is_ok());
@@ -792,6 +895,41 @@ mod tests {
             sha256_file(&path).unwrap(),
             "4dd5b6e2bf3bfd4f6a273018b06a65680ef9631f8e0156e6ddd6a06ca0510172"
         );
+    }
+
+    #[test]
+    fn rejects_an_artifact_with_the_wrong_checksum() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.zip");
+        fs::write(&path, b"manifold").unwrap();
+
+        assert_eq!(
+            verify_archive_checksum(&path, &"0".repeat(64)).unwrap_err(),
+            "artifact integrity verification failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_before_network_or_partial_file_creation() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        let client = reqwest::Client::new();
+        let cancellation = AtomicBool::new(true);
+
+        let error = download_to_file(
+            &client,
+            "http://127.0.0.1:1/artifact.zip",
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error, "installation cancelled");
+        assert!(!path.exists());
     }
 
     #[tokio::test]
@@ -831,6 +969,71 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"manifold");
     }
 
+    #[tokio::test]
+    async fn retries_a_short_download_from_the_saved_partial_file() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            first
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0_u8; 2048];
+            let count = first.read(&mut request).unwrap();
+            let first_request = String::from_utf8_lossy(&request[..count]);
+            assert!(!first_request.to_ascii_lowercase().contains("range:"));
+            first
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nmani")
+                .unwrap();
+
+            let (mut second, _) = listener.accept().unwrap();
+            second
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0_u8; 2048];
+            let count = second.read(&mut request).unwrap();
+            let second_request = String::from_utf8_lossy(&request[..count]);
+            assert!(second_request
+                .to_ascii_lowercase()
+                .contains("range: bytes=4-"));
+            second
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfold")
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        let client = reqwest::Client::new();
+        let cancellation = AtomicBool::new(false);
+
+        let first_error = download_to_file(
+            &client,
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(first_error.contains("artifact size mismatch"));
+        assert_eq!(fs::read(&path).unwrap(), b"mani");
+
+        download_to_file(
+            &client,
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"manifold");
+    }
+
     #[test]
     fn rejects_archive_entries_that_escape_the_staging_directory() {
         let directory = tempfile::tempdir().unwrap();
@@ -846,5 +1049,96 @@ mod tests {
         fs::create_dir_all(&destination).unwrap();
         assert!(extract_zip(&archive_path, &destination, 1024).is_err());
         assert!(!directory.path().join("outside.exe").exists());
+    }
+
+    #[test]
+    fn rejects_a_malformed_zip_archive() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("malformed.zip");
+        fs::write(&archive_path, b"not a zip archive").unwrap();
+        let destination = directory.path().join("staging");
+        fs::create_dir_all(&destination).unwrap();
+
+        let error = extract_and_validate_archive(&archive_path, &destination, 1024, "game.exe")
+            .unwrap_err();
+
+        assert!(error.contains("not a valid ZIP archive"));
+    }
+
+    #[test]
+    fn fresh_install_registers_only_after_entrypoint_validation() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let plan = test_plan("game.exe", 4);
+
+        let installed =
+            install_archive_at(&install_root, &registry, "Test Game", &plan, &archive_path)
+                .unwrap();
+
+        assert_eq!(installed.version, "1.0.0");
+        assert!(install_root.join("test-game/game.exe").is_file());
+        let stored: Vec<InstalledGame> = read_json_or_default(&registry).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].game_slug, "test-game");
+        assert!(!install_root.join(".test-game.staging").exists());
+        assert!(!install_root.join(".test-game.backup").exists());
+    }
+
+    #[test]
+    fn missing_entrypoint_does_not_activate_or_register_installation() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("readme.txt", b"docs")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let plan = test_plan("game.exe", 4);
+
+        let error = install_archive_at(&install_root, &registry, "Test Game", &plan, &archive_path)
+            .unwrap_err();
+
+        assert_eq!(error, "artifact does not contain the declared entrypoint");
+        assert!(!install_root.join("test-game").exists());
+        assert!(!install_root.join(".test-game.staging").exists());
+        assert!(!registry.exists());
+    }
+
+    #[test]
+    fn failed_activation_restores_the_previous_working_installation() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("test-game");
+        let backup = directory.path().join(".test-game.backup");
+        let missing_stage = directory.path().join(".test-game.staging");
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(destination.join("old.exe"), b"working").unwrap();
+
+        let error =
+            activate_staged_installation(&missing_stage, &destination, &backup).unwrap_err();
+
+        assert!(error.contains("could not activate installation"));
+        assert_eq!(fs::read(destination.join("old.exe")).unwrap(), b"working");
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn progress_events_keep_the_frontend_contract_stable() {
+        let progress = InstallationProgress {
+            game_slug: "test-game".into(),
+            title: "Test Game".into(),
+            phase: "failed".into(),
+            downloaded_bytes: 4,
+            total_bytes: 8,
+            version: Some("1.0.0".into()),
+            error: Some("network unavailable".into()),
+        };
+
+        let value = serde_json::to_value(progress).unwrap();
+        assert_eq!(value["gameSlug"], "test-game");
+        assert_eq!(value["downloadedBytes"], 4);
+        assert_eq!(value["totalBytes"], 8);
+        assert_eq!(value["phase"], "failed");
+        assert_eq!(value["error"], "network unavailable");
     }
 }
