@@ -14,12 +14,30 @@ const PLACEHOLDER_ICON: &[u8] = &[
 ];
 
 fn main() {
-    let icon_path = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("missing crate root"))
-        .join("icons/icon.png");
-    if !icon_path.exists() {
-        fs::create_dir_all(icon_path.parent().expect("icon directory has a parent"))
-            .expect("failed to create the Tauri icon directory");
-        fs::write(icon_path, PLACEHOLDER_ICON).expect("failed to generate the placeholder icon");
+    let icon_directory =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("missing crate root")).join("icons");
+    let png_path = icon_directory.join("icon.png");
+    if !png_path.exists() {
+        fs::create_dir_all(&icon_directory).expect("failed to create the Tauri icon directory");
+        fs::write(png_path, PLACEHOLDER_ICON).expect("failed to generate the PNG placeholder icon");
+    }
+
+    let ico_path = icon_directory.join("icon.ico");
+    if !ico_path.exists() {
+        let mut ico = vec![
+            0, 0, // reserved
+            1, 0, // ICO image type
+            1, 0, // one image
+            32, 32, // width and height
+            0,  // no color palette
+            0,  // reserved
+            1, 0, // color planes
+            32, 0, // bits per pixel
+        ];
+        ico.extend_from_slice(&(PLACEHOLDER_ICON.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&22_u32.to_le_bytes());
+        ico.extend_from_slice(PLACEHOLDER_ICON);
+        fs::write(ico_path, ico).expect("failed to generate the ICO placeholder icon");
     }
     tauri_build::build()
 }

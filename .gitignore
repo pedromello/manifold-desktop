@@ -6,3 +6,4 @@ src-tauri/icons/icon.png
 .env.local
 *.log
 *.tsbuildinfo
+src-tauri/icons/icon.ico
