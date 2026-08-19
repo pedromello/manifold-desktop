@@ -7,7 +7,7 @@ export const environments = {
 export type AppEnvironment = keyof typeof environments;
 
 export function loadConfig(
-  value: string = import.meta.env.VITE_APP_ENV ?? 'development',
+  value: string = import.meta.env.VITE_APP_ENV ?? 'production',
 ) {
   if (!(value in environments))
     throw new Error(`Invalid VITE_APP_ENV: ${value}`);
