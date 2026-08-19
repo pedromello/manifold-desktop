@@ -1,3 +1,12 @@
 # Local state
 
-No persistent local state or credentials are stored in this scaffold. UI state remains in memory. Future persistence must document its schema, migration and deletion strategy, use an application-owned directory, and avoid storing credentials in plain text. The native Rust HTTP layer owns the `session_id` cookie jar exposed through narrow login, logout, and authenticated-request commands; cookie values must never be returned to the WebView or logged. If login must survive application restarts, persist the cookie only through operating-system-protected storage and delete it on logout. Signed download URLs are transient and must not be persisted.
+The native layer stores only the minimum state needed by the desktop client:
+
+- `session_id` is stored in the operating-system credential vault through `keyring` and deleted on logout. It is never returned to the WebView or logged.
+- `installations.json` records the game slug, release, installation directory, entrypoint, launch settings, and installation time. Missing entrypoints are reconciled out when the registry is read.
+- `installation-preferences.json` contains the optional user-selected installation root.
+- `downloads/<artifact>.part` holds resumable partial downloads. A completed archive is deleted after installation.
+- `installation.log` records timestamps, game slugs, and non-secret outcomes for support diagnostics.
+- `manifold.language` in WebView local storage contains only the selected UI locale.
+
+JSON state is written through a temporary file and rollback backup. Game files are extracted to a staging directory and activated by rename. Signed download URLs, OTP codes, session tokens, and API response bodies are never persisted.

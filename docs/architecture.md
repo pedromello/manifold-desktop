@@ -13,3 +13,11 @@ The desktop application consumes the same client-neutral API v1 resources as
 the website at `/api/v1`. Its supported native targets are `WINDOWS`, `MAC`, and
 `LINUX`, paired with `X86_64` or `AARCH64`. See the
 [contract synchronization policy](desktop-api-contract.md).
+
+## Distribution and installation
+
+React resolves a typed distribution plan through `distribution.ts`; tests can inject a fixture adapter while normal builds use the production API. Rust independently validates release, artifact, checksum, HTTPS URL, and manifest path relationships before touching disk.
+
+Artifacts download into an application-owned partial file. A retry requests the remaining range, the complete archive is checked with SHA-256, and extraction happens in a staging directory with traversal and symlink protection. The staging directory replaces the previous game directory only after verification. Launching is limited to the manifest entrypoint beneath the recorded installation root.
+
+The download URL is short-lived and never stored. Failed downloads retain only the partial artifact so a freshly authorized request can resume it.
