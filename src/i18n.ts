@@ -174,6 +174,15 @@ const resources = {
           'Não foi possível carregar as preferências. A pasta padrão continuará disponível.',
         saveError: 'Não foi possível salvar as configurações. Tente novamente.',
         folderError: 'Não foi possível abrir o seletor de pastas.',
+        diagnostics: 'Diagnóstico de instalação',
+        diagnosticsHelp:
+          'Veja ou copie eventos técnicos seguros para compartilhar com o suporte. Tokens, URLs assinadas e caminhos locais não são incluídos.',
+        diagnosticsLoad: 'Carregar diagnóstico',
+        diagnosticsLoading: 'Carregando…',
+        diagnosticsCopy: 'Copiar diagnóstico',
+        diagnosticsCopied: 'Diagnóstico copiado.',
+        diagnosticsError: 'Não foi possível carregar o diagnóstico.',
+        diagnosticsCopyError: 'Não foi possível copiar o diagnóstico.',
       },
       about: {
         eyebrow: 'SOBRE',
@@ -366,6 +375,15 @@ const resources = {
           'Preferences could not be loaded. The default folder remains available.',
         saveError: 'Settings could not be saved. Try again.',
         folderError: 'The folder picker could not be opened.',
+        diagnostics: 'Installation diagnostics',
+        diagnosticsHelp:
+          'View or copy safe technical events to share with support. Tokens, signed URLs, and local paths are excluded.',
+        diagnosticsLoad: 'Load diagnostics',
+        diagnosticsLoading: 'Loading…',
+        diagnosticsCopy: 'Copy diagnostics',
+        diagnosticsCopied: 'Diagnostics copied.',
+        diagnosticsError: 'Diagnostics could not be loaded.',
+        diagnosticsCopyError: 'Diagnostics could not be copied.',
       },
       about: {
         eyebrow: 'ABOUT',

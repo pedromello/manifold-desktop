@@ -7,10 +7,53 @@ import { SettingsPage } from './settings';
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
 
+const writeText = vi.fn();
+Object.defineProperty(navigator, 'clipboard', {
+  configurable: true,
+  value: { writeText },
+});
+
 afterEach(() => {
   cleanup();
   vi.mocked(invoke).mockReset();
   vi.mocked(open).mockReset();
+  writeText.mockReset();
+});
+
+it('loads and copies sanitized installation diagnostics', async () => {
+  const diagnostics = {
+    appVersion: '0.1.0',
+    events: [
+      {
+        timestamp: 1776000000,
+        gameSlug: 'capyvarias',
+        event: 'FAILED',
+        releaseId: 'release-1',
+        artifactId: 'artifact-1',
+        version: '1.0.0',
+        totalBytes: '1024',
+        errorCode: 'DOWNLOAD_FAILED',
+      },
+    ],
+  };
+  vi.mocked(invoke)
+    .mockResolvedValueOnce({
+      installDirectory: null,
+      defaultInstallDirectory: 'C:\\Games\\Manifold',
+    })
+    .mockResolvedValueOnce(diagnostics);
+  writeText.mockResolvedValueOnce(undefined);
+
+  render(<SettingsPage />);
+  await screen.findByRole('textbox', { name: 'Installation location' });
+  fireEvent.click(screen.getByRole('button', { name: 'Load diagnostics' }));
+
+  expect(await screen.findByText(/DOWNLOAD_FAILED/)).toBeInTheDocument();
+  expect(invoke).toHaveBeenLastCalledWith('get_installation_diagnostics');
+  fireEvent.click(screen.getByRole('button', { name: 'Copy diagnostics' }));
+
+  expect(writeText).toHaveBeenCalledWith(JSON.stringify(diagnostics, null, 2));
+  expect(await screen.findByText('Diagnostics copied.')).toBeInTheDocument();
 });
 
 it('loads and saves a custom installation folder', async () => {

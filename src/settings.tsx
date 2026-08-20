@@ -4,6 +4,22 @@ import { FormEvent, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { InstallationPreferences } from './installation';
 
+type InstallationDiagnosticEvent = {
+  timestamp: number;
+  gameSlug: string;
+  event: string;
+  releaseId: string | null;
+  artifactId: string | null;
+  version: string | null;
+  totalBytes: string | null;
+  errorCode: string | null;
+};
+
+type InstallationDiagnostics = {
+  appVersion: string;
+  events: InstallationDiagnosticEvent[];
+};
+
 export function SettingsPage() {
   const { t, i18n } = useTranslation();
   const [preferences, setPreferences] =
@@ -13,6 +29,10 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] =
+    useState<InstallationDiagnostics | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
 
   useEffect(() => {
     invoke<InstallationPreferences>('get_installation_preferences')
@@ -61,6 +81,31 @@ export function SettingsPage() {
       if (typeof selected === 'string') setDirectory(selected);
     } catch {
       setErrorKey('settings.folderError');
+    }
+  }
+
+  async function loadDiagnostics() {
+    setDiagnosticsLoading(true);
+    setErrorKey(null);
+    try {
+      setDiagnostics(
+        await invoke<InstallationDiagnostics>('get_installation_diagnostics'),
+      );
+    } catch {
+      setErrorKey('settings.diagnosticsError');
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  }
+
+  async function copyDiagnostics() {
+    if (!diagnostics) return;
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(diagnostics, null, 2));
+      setDiagnosticsCopied(true);
+      window.setTimeout(() => setDiagnosticsCopied(false), 2500);
+    } catch {
+      setErrorKey('settings.diagnosticsCopyError');
     }
   }
 
@@ -130,6 +175,43 @@ export function SettingsPage() {
           </span>
         )}
       </form>
+      <div className="settings-card diagnostics-card">
+        <div>
+          <strong>{t('settings.diagnostics')}</strong>
+          <p>{t('settings.diagnosticsHelp')}</p>
+        </div>
+        <div className="diagnostics-actions">
+          <button
+            className="secondary-action"
+            disabled={diagnosticsLoading}
+            type="button"
+            onClick={() => void loadDiagnostics()}
+          >
+            {diagnosticsLoading
+              ? t('settings.diagnosticsLoading')
+              : t('settings.diagnosticsLoad')}
+          </button>
+          {diagnostics && (
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={() => void copyDiagnostics()}
+            >
+              {t('settings.diagnosticsCopy')}
+            </button>
+          )}
+        </div>
+        {diagnostics && (
+          <pre className="diagnostics-output" tabIndex={0}>
+            {JSON.stringify(diagnostics, null, 2)}
+          </pre>
+        )}
+        {diagnosticsCopied && (
+          <span className="settings-saved" role="status">
+            {t('settings.diagnosticsCopied')}
+          </span>
+        )}
+      </div>
     </section>
   );
 }

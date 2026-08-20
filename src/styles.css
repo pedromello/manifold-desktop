@@ -977,6 +977,28 @@ dt {
   font-size: 12px;
   line-height: 1.45;
 }
+.diagnostics-card p {
+  margin: 0.45rem 0 0;
+  color: #958c9f;
+}
+.diagnostics-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+.diagnostics-output {
+  max-height: 18rem;
+  margin: 0;
+  padding: 0.85rem;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 0.75rem;
+  background: rgba(0, 0, 0, 0.25);
+  color: #f8f5fb;
+  font-size: 0.76rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .library-card.skeleton {
   min-height: 330px;
   background: linear-gradient(

@@ -838,6 +838,7 @@ pub fn run() {
             installer::launch_game,
             installer::get_installation_preferences,
             installer::set_installation_preferences,
+            installer::get_installation_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Manifold Desktop");
