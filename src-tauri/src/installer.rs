@@ -19,6 +19,31 @@ use tokio::io::AsyncWriteExt;
 const REGISTRY_FILE: &str = "installations.json";
 const PREFERENCES_FILE: &str = "installation-preferences.json";
 const MAX_ARCHIVE_FILES: usize = 100_000;
+const DOWNLOAD_AUTHORIZATION_EXPIRED: &str = "download authorization expired";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallCommandError {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+impl InstallCommandError {
+    fn from_message(message: String) -> Self {
+        let authorization_expired = message == DOWNLOAD_AUTHORIZATION_EXPIRED;
+        Self {
+            code: if authorization_expired {
+                "DOWNLOAD_AUTHORIZATION_EXPIRED"
+            } else {
+                "INSTALLATION_FAILED"
+            }
+            .into(),
+            message,
+            retryable: true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ReleaseTarget {
@@ -506,6 +531,12 @@ where
         .send()
         .await
         .map_err(|error| format!("artifact download failed: {error}"))?;
+    if matches!(
+        response.status(),
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        return Err(DOWNLOAD_AUTHORIZATION_EXPIRED.into());
+    }
     if !response.status().is_success() {
         return Err(format!("artifact server returned {}", response.status()));
     }
@@ -805,8 +836,10 @@ pub async fn install_game(
     manager: tauri::State<'_, InstallationManager>,
     title: String,
     plan: DistributionPlan,
-) -> Result<InstalledGame, String> {
-    let cancellation = manager.begin(&plan.game_slug)?;
+) -> Result<InstalledGame, InstallCommandError> {
+    let cancellation = manager
+        .begin(&plan.game_slug)
+        .map_err(InstallCommandError::from_message)?;
     append_install_log(&app, &plan.game_slug, "started");
     let result = install_game_inner(&app, &title, &plan, &cancellation).await;
     manager.finish(&plan.game_slug);
@@ -819,12 +852,16 @@ pub async fn install_game(
             append_install_log(&app, &plan.game_slug, "cancelled");
             emit_progress(&app, &plan, &title, "cancelled", 0, 0, None)
         }
+        Err(error) if error == DOWNLOAD_AUTHORIZATION_EXPIRED => {
+            append_install_log(&app, &plan.game_slug, "download authorization expired");
+            emit_progress(&app, &plan, &title, "resolving", 0, 0, None)
+        }
         Err(error) => {
             append_install_log(&app, &plan.game_slug, &format!("failed: {error}"));
             emit_progress(&app, &plan, &title, "failed", 0, 0, Some(error.clone()))
         }
     }
-    result
+    result.map_err(InstallCommandError::from_message)
 }
 
 #[tauri::command]
@@ -1026,6 +1063,48 @@ mod tests {
 
         assert_eq!(error, "installation cancelled");
         assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn expired_authorization_preserves_the_partial_download_for_resume() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0_u8; 2048];
+            let count = stream.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(request.to_ascii_lowercase().contains("range: bytes=4-"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        fs::write(&path, b"mani").unwrap();
+        let client = reqwest::Client::new();
+        let cancellation = AtomicBool::new(false);
+
+        let error = download_to_file(
+            &client,
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            Some("artifact-v1"),
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        server.join().unwrap();
+        assert_eq!(error, DOWNLOAD_AUTHORIZATION_EXPIRED);
+        assert_eq!(fs::read(&path).unwrap(), b"mani");
     }
 
     #[tokio::test]
