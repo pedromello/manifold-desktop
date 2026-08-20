@@ -406,6 +406,14 @@ fn store_games_url(query: Option<&str>) -> Result<url::Url, String> {
     Ok(url)
 }
 
+fn install_manifest_url(release_id: &str, artifact_id: &str) -> Result<url::Url, String> {
+    let mut url = production_api_url(&format!("releases/{release_id}/manifest"))?;
+    url.query_pairs_mut()
+        .append_pair("schema_version", "1")
+        .append_pair("artifact_id", artifact_id);
+    Ok(url)
+}
+
 async fn api_json<T: DeserializeOwned>(response: Response) -> Result<T, String> {
     let status = response.status();
     if status.is_success() {
@@ -703,10 +711,7 @@ async fn resolve_install_plan(
 ) -> Result<installer::DistributionPlan, String> {
     let client = state.client()?;
     let release = latest_compatible_release(&client, &game_slug).await?;
-    let manifest_url = production_api_url(&format!(
-        "releases/{}/manifest?schema_version=1",
-        release.id
-    ))?;
+    let manifest_url = install_manifest_url(&release.id, &release.artifact_id)?;
     let manifest: installer::InstallManifest =
         api_json(send(&client, client.get(manifest_url)).await?).await?;
     let download_url = production_api_url(&format!("artifacts/{}/download", release.artifact_id))?;
@@ -783,6 +788,16 @@ mod tests {
             "https://manifoldpowered.com/api/v1/games?limit=12&q=cozy+games"
         );
         assert!(store_games_url(Some(&"x".repeat(81))).is_err());
+    }
+
+    #[test]
+    fn selects_the_resolved_artifact_when_requesting_a_manifest() {
+        assert_eq!(
+            install_manifest_url("release-1", "artifact-1")
+                .unwrap()
+                .as_str(),
+            "https://manifoldpowered.com/api/v1/releases/release-1/manifest?schema_version=1&artifact_id=artifact-1"
+        );
     }
 
     #[test]

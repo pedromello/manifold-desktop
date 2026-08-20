@@ -64,6 +64,8 @@ export function LibraryPage({
   const [loading, setLoading] = useState(Boolean(user));
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
+  const [launchingSlug, setLaunchingSlug] = useState<string | null>(null);
+  const [launchErrors, setLaunchErrors] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (!user) {
@@ -80,9 +82,8 @@ export function LibraryPage({
       })
       .catch((reason: unknown) => {
         if (!active) return;
-        const message =
-          typeof reason === 'string' ? reason : t('library.unavailable');
-        setError(message);
+        const message = typeof reason === 'string' ? reason : '';
+        setError(t('library.unavailable'));
         if (/session|permission|forbidden|unauthorized/i.test(message)) {
           onSessionExpired();
         }
@@ -114,6 +115,25 @@ export function LibraryPage({
 
   if (!user) {
     return <AuthPanel onAuthenticated={onAuthenticated} />;
+  }
+
+  async function handleGameAction(game: LibraryGame) {
+    const installation = installed[game.slug];
+    const needsRepair = installation?.status === 'REPAIR_NEEDED';
+    const updateVersion = availableUpdates[game.slug];
+    setLaunchErrors((current) => ({ ...current, [game.slug]: false }));
+    if (installation && !needsRepair && !updateVersion) {
+      setLaunchingSlug(game.slug);
+      try {
+        await launch(game.slug);
+      } catch {
+        setLaunchErrors((current) => ({ ...current, [game.slug]: true }));
+      } finally {
+        setLaunchingSlug(null);
+      }
+      return;
+    }
+    await install(game.slug, game.title);
   }
 
   return (
@@ -185,12 +205,17 @@ export function LibraryPage({
                   'resolving',
                   'downloading',
                   'verifying',
+                  'extracting',
                   'installing',
                 ].includes(job.phase),
               );
               const installation = installed[game.slug];
               const needsRepair = installation?.status === 'REPAIR_NEEDED';
               const updateVersion = availableUpdates[game.slug];
+              const isLaunching = launchingSlug === game.slug;
+              const progressLabel = job ? t(`downloads.${job.phase}`) : null;
+              const installFeedbackId = `install-feedback-${game.slug}`;
+              const launchFeedbackId = `launch-feedback-${game.slug}`;
               return (
                 <article className="library-card" key={game.libraryId}>
                   <div className="library-art">
@@ -227,7 +252,7 @@ export function LibraryPage({
                               ? t('library.granted')
                               : game.acquisitionType === 'MANIFOLD_STORE'
                                 ? t('library.acquiredStore')
-                                : game.acquisitionLabel}
+                                : t('library.acquiredManifold')}
                         </strong>
                         {date && <span>{date}</span>}
                       </div>
@@ -252,7 +277,17 @@ export function LibraryPage({
                     {isBusy && job && (
                       <div
                         className="install-progress"
-                        aria-label={`${game.title} ${job.phase}`}
+                        aria-label={t('library.progressLabel', {
+                          title: game.title,
+                          phase: progressLabel,
+                        })}
+                        aria-valuemax={100}
+                        aria-valuemin={0}
+                        aria-valuenow={Math.round(
+                          (job.downloadedBytes / Math.max(job.totalBytes, 1)) *
+                            100,
+                        )}
+                        role="progressbar"
                       >
                         <span
                           style={{
@@ -263,28 +298,47 @@ export function LibraryPage({
                     )}
                     <button
                       className="game-action"
-                      disabled={isBusy}
-                      onClick={() =>
-                        installation && !needsRepair && !updateVersion
-                          ? void launch(game.slug)
-                          : void install(game.slug, game.title)
+                      aria-describedby={
+                        [
+                          job?.phase === 'failed' ? installFeedbackId : null,
+                          launchErrors[game.slug] ? launchFeedbackId : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' ') || undefined
                       }
+                      disabled={isBusy || isLaunching}
+                      onClick={() => void handleGameAction(game)}
                     >
                       {isBusy
-                        ? t('library.installing')
-                        : needsRepair
-                          ? t('library.repair')
-                          : updateVersion
-                            ? t('library.update')
-                            : installation
-                              ? t('library.play')
-                              : job?.phase === 'failed'
-                                ? t('library.retryInstall')
-                                : t('library.install')}
+                        ? progressLabel
+                        : isLaunching
+                          ? t('library.launching')
+                          : needsRepair
+                            ? t('library.repair')
+                            : updateVersion
+                              ? t('library.update')
+                              : installation
+                                ? t('library.play')
+                                : job?.phase === 'failed'
+                                  ? t('library.retryInstall')
+                                  : t('library.install')}
                     </button>
                     {job?.phase === 'failed' && job.error && (
-                      <p className="install-error" role="alert">
-                        {job.error}
+                      <p
+                        className="install-error"
+                        id={installFeedbackId}
+                        role="alert"
+                      >
+                        {t('errors.installFailed')} {t('downloads.failedHelp')}
+                      </p>
+                    )}
+                    {launchErrors[game.slug] && (
+                      <p
+                        className="install-error"
+                        id={launchFeedbackId}
+                        role="alert"
+                      >
+                        {t('errors.launchFailed')}
                       </p>
                     )}
                   </div>

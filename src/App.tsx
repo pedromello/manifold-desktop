@@ -81,11 +81,8 @@ function StorePage() {
       .then((data) => {
         if (active) setCatalog(data);
       })
-      .catch((reason: unknown) => {
-        if (active)
-          setError(
-            typeof reason === 'string' ? reason : t('store.unavailable'),
-          );
+      .catch(() => {
+        if (active) setError(t('store.unavailable'));
       })
       .finally(() => {
         if (active) setLoading(false);
