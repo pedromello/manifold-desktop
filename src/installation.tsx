@@ -14,6 +14,10 @@ import {
   DistributionPlan,
   productionDistributionAdapter,
 } from './distribution';
+import {
+  DistributionErrorCode,
+  normalizeDistributionFailure,
+} from './distribution-errors';
 import type { ReleaseSummary } from './contracts/desktop-v1';
 
 export type InstallationPhase =
@@ -35,6 +39,8 @@ export type InstallationProgress = {
   totalBytes: number;
   version: string | null;
   error: string | null;
+  errorCode?: DistributionErrorCode;
+  retryable?: boolean;
 };
 
 export type InstalledGame = {
@@ -70,14 +76,6 @@ type InstallationContextValue = {
 const InstallationContext = createContext<InstallationContextValue | null>(
   null,
 );
-
-function message(reason: unknown) {
-  return typeof reason === 'string'
-    ? reason
-    : reason instanceof Error
-      ? reason.message
-      : 'Installation failed';
-}
 
 export function isUpdateAvailable(
   current: InstalledGame,
@@ -154,7 +152,8 @@ export function InstallationProvider({
         await invoke<InstalledGame>('install_game', { title, plan });
         await refresh();
       } catch (reason) {
-        const cancelled = message(reason).toLowerCase().includes('cancelled');
+        const failure = normalizeDistributionFailure(reason);
+        const cancelled = failure.message.toLowerCase().includes('cancelled');
         setProgress((current) => ({
           ...current,
           [gameSlug]: {
@@ -166,7 +165,9 @@ export function InstallationProvider({
               version: null,
             }),
             phase: cancelled ? 'cancelled' : 'failed',
-            error: cancelled ? null : message(reason),
+            error: cancelled ? null : failure.message,
+            errorCode: cancelled ? undefined : failure.code,
+            retryable: cancelled ? undefined : failure.retryable,
           },
         }));
       }

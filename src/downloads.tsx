@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
+import { distributionErrorKey } from './distribution-errors';
 import { InstallationPhase, useInstallations } from './installation';
 
 const activePhases: InstallationPhase[] = [
@@ -112,7 +113,12 @@ export function DownloadsPage() {
                   )}
                   {job.error && (
                     <p className="install-error" role="alert">
-                      {t('errors.installFailed')} {t('downloads.failedHelp')}
+                      {t(distributionErrorKey(job.errorCode))}{' '}
+                      {t(
+                        job.retryable === false
+                          ? 'downloads.nonRetryableHelp'
+                          : 'downloads.failedHelp',
+                      )}
                     </p>
                   )}
                   {job.phase === 'cancelled' && (

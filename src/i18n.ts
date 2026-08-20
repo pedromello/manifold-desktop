@@ -146,6 +146,8 @@ const resources = {
         cancelledHelp: 'Você pode reiniciar o download quando quiser.',
         failedHelp:
           'Tente novamente. Seus jogos instalados não serão afetados.',
+        nonRetryableHelp:
+          'Tentar novamente não resolverá este problema agora. Verifique sua conta ou aguarde uma correção.',
         retry: 'Tentar novamente',
         bytes: '{{done}} de {{total}}',
         progressLabel: 'Progresso de {{title}}',
@@ -187,6 +189,18 @@ const resources = {
           'A distribuição deste jogo ainda não está disponível.',
         installFailed: 'Não foi possível instalar o jogo.',
         launchFailed: 'Não foi possível iniciar o jogo.',
+        sessionExpired: 'Sua sessão expirou. Entre novamente para continuar.',
+        accountDisabled: 'Esta conta não pode acessar downloads no momento.',
+        entitlementRequired: 'Sua conta não possui acesso a este jogo.',
+        releaseRetired:
+          'Esta versão foi retirada. Procure uma versão mais recente.',
+        integrityFailure:
+          'O pacote publicado falhou na verificação de integridade.',
+        rateLimited: 'Muitas tentativas. Aguarde um momento e tente novamente.',
+        serviceUnavailable:
+          'O serviço de distribuição está temporariamente indisponível.',
+        incompatibleResponse:
+          'O aplicativo recebeu uma resposta de distribuição incompatível.',
       },
     },
   },
@@ -322,6 +336,8 @@ const resources = {
         cancelError: 'This download could not be cancelled.',
         cancelledHelp: 'You can restart the download whenever you are ready.',
         failedHelp: 'Try again. Your installed games will not be affected.',
+        nonRetryableHelp:
+          'Trying again will not resolve this yet. Check your account or wait for a fix.',
         retry: 'Try again',
         bytes: '{{done}} of {{total}}',
         progressLabel: '{{title}} progress',
@@ -363,6 +379,17 @@ const resources = {
           'Distribution is not available for this game yet.',
         installFailed: 'The game could not be installed.',
         launchFailed: 'The game could not be launched.',
+        sessionExpired: 'Your session expired. Sign in again to continue.',
+        accountDisabled: 'This account cannot access downloads right now.',
+        entitlementRequired: 'Your account does not have access to this game.',
+        releaseRetired: 'This release was retired. Check for a newer version.',
+        integrityFailure:
+          'The published package failed its integrity verification.',
+        rateLimited: 'Too many attempts. Wait a moment and try again.',
+        serviceUnavailable:
+          'The distribution service is temporarily unavailable.',
+        incompatibleResponse:
+          'The app received an incompatible distribution response.',
       },
     },
   },
