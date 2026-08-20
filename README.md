@@ -45,6 +45,20 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 cargo check --manifest-path src-tauri/Cargo.toml --locked
 ```
 
+## Game artifact preflight
+
+Before requesting a publisher upload URL, validate the Windows x64 ZIP and emit
+the exact API declaration:
+
+```powershell
+npm run artifact:preflight -- C:\path\game.zip --entrypoint bin\Game.exe --output upload-declaration.json
+```
+
+The command fails on unsafe or inconsistent archives and calculates the
+lowercase SHA-256 plus compressed and installed sizes. Follow the
+[first production installation checklist](docs/first-production-install.md)
+for publication, entitlement, installation, launch, and evidence collection.
+
 ## Packaging
 
 After validation, set the production environment and let Tauri create platform-native packages:
