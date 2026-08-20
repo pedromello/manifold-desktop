@@ -654,13 +654,17 @@ fn activate_staged_installation(
     Ok(())
 }
 
-fn install_archive_at(
+fn install_archive_at_with_callback<F>(
     install_root: &Path,
     registry_file: &Path,
     title: &str,
     plan: &DistributionPlan,
     archive_path: &Path,
-) -> Result<InstalledGame, String> {
+    on_extracted: F,
+) -> Result<InstalledGame, String>
+where
+    F: FnOnce(),
+{
     fs::create_dir_all(install_root)
         .map_err(|error| format!("could not create installation root: {error}"))?;
     let stage = install_root.join(format!(".{}.staging", plan.game_slug));
@@ -687,6 +691,7 @@ fn install_archive_at(
         let _ = fs::remove_dir_all(&stage);
         return Err(error);
     }
+    on_extracted();
     activate_staged_installation(&stage, &destination, &backup)?;
     let installed_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -716,6 +721,24 @@ fn install_archive_at(
     Ok(installed)
 }
 
+#[cfg(test)]
+fn install_archive_at(
+    install_root: &Path,
+    registry_file: &Path,
+    title: &str,
+    plan: &DistributionPlan,
+    archive_path: &Path,
+) -> Result<InstalledGame, String> {
+    install_archive_at_with_callback(
+        install_root,
+        registry_file,
+        title,
+        plan,
+        archive_path,
+        || {},
+    )
+}
+
 fn install_archive(
     app: &AppHandle,
     title: &str,
@@ -723,12 +746,13 @@ fn install_archive(
     archive_path: &Path,
 ) -> Result<InstalledGame, String> {
     let install_root = configured_install_root(app)?;
-    install_archive_at(
+    install_archive_at_with_callback(
         &install_root,
         &registry_path(app)?,
         title,
         plan,
         archive_path,
+        || emit_progress(app, plan, title, "installing", 1, 1, None),
     )
 }
 
@@ -756,7 +780,7 @@ async fn install_game_inner(
     if cancellation.load(Ordering::Relaxed) {
         return Err("installation cancelled".into());
     }
-    emit_progress(app, plan, title, "installing", total, total, None);
+    emit_progress(app, plan, title, "extracting", total, total, None);
     let app_for_install = app.clone();
     let title_for_install = title.to_string();
     let plan_for_install = plan.clone();
