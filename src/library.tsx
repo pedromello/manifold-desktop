@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { AuthPanel, AuthUser } from './auth';
+import { distributionErrorKey } from './distribution-errors';
 import { useInstallations } from './installation';
 
 type LibraryOutlet = {
@@ -329,7 +330,12 @@ export function LibraryPage({
                         id={installFeedbackId}
                         role="alert"
                       >
-                        {t('errors.installFailed')} {t('downloads.failedHelp')}
+                        {t(distributionErrorKey(job.errorCode))}{' '}
+                        {t(
+                          job.retryable === false
+                            ? 'downloads.nonRetryableHelp'
+                            : 'downloads.failedHelp',
+                        )}
                       </p>
                     )}
                     {launchErrors[game.slug] && (

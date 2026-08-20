@@ -176,6 +176,7 @@ export const releasePatchSchema = z.object({
 
 export type DesktopPlatform = z.infer<typeof desktopPlatformSchema>;
 export type DesktopArchitecture = z.infer<typeof desktopArchitectureSchema>;
+export type DesktopErrorCode = z.infer<typeof desktopErrorCodeSchema>;
 export type DesktopError = z.infer<typeof desktopErrorSchema>;
 export type RequestOtpRequest = z.infer<typeof requestOtpSchema>;
 export type OtpRequested = z.infer<typeof otpRequestedSchema>;

@@ -101,6 +101,44 @@ struct ApiError {
     action: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DesktopApiErrorEnvelope {
+    error: DesktopApiErrorBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct DesktopApiErrorBody {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DistributionError {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+impl DistributionError {
+    fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            code: "SERVICE_UNAVAILABLE".into(),
+            message: message.into(),
+            retryable: true,
+        }
+    }
+
+    fn invalid_request(message: impl Into<String>) -> Self {
+        Self {
+            code: "INVALID_REQUEST".into(),
+            message: message.into(),
+            retryable: false,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthUser {
@@ -435,6 +473,38 @@ async fn api_json<T: DeserializeOwned>(response: Response) -> Result<T, String> 
     })
 }
 
+async fn distribution_api_json<T: DeserializeOwned>(
+    response: Response,
+) -> Result<T, DistributionError> {
+    let status = response.status();
+    if status.is_success() {
+        return response.json::<T>().await.map_err(|error| {
+            DistributionError::service_unavailable(format!(
+                "Manifold API returned invalid distribution data: {error}"
+            ))
+        });
+    }
+    if let Ok(envelope) = response.json::<DesktopApiErrorEnvelope>().await {
+        return Err(DistributionError {
+            code: envelope.error.code,
+            message: envelope.error.message,
+            retryable: envelope.error.retryable,
+        });
+    }
+    let (code, retryable) = match status {
+        StatusCode::UNAUTHORIZED => ("AUTHENTICATION_REQUIRED", false),
+        StatusCode::FORBIDDEN => ("ENTITLEMENT_REQUIRED", false),
+        StatusCode::TOO_MANY_REQUESTS => ("RATE_LIMITED", true),
+        status if status.is_server_error() => ("SERVICE_UNAVAILABLE", true),
+        _ => ("INVALID_REQUEST", false),
+    };
+    Err(DistributionError {
+        code: code.into(),
+        message: format!("Manifold API returned {status}"),
+        retryable,
+    })
+}
+
 async fn send(_client: &Client, request: reqwest::RequestBuilder) -> Result<Response, String> {
     request
         .header(reqwest::header::ACCEPT, "application/json")
@@ -684,23 +754,30 @@ fn distribution_target() -> Result<(&'static str, &'static str), String> {
 async fn latest_compatible_release(
     client: &Client,
     game_slug: &str,
-) -> Result<installer::ReleaseSummary, String> {
-    installer::validate_game_slug(game_slug)?;
-    let (platform, architecture) = distribution_target()?;
-    let mut release_url = production_api_url(&format!("games/{game_slug}/releases/latest"))?;
+) -> Result<installer::ReleaseSummary, DistributionError> {
+    installer::validate_game_slug(game_slug).map_err(DistributionError::invalid_request)?;
+    let (platform, architecture) =
+        distribution_target().map_err(DistributionError::service_unavailable)?;
+    let mut release_url = production_api_url(&format!("games/{game_slug}/releases/latest"))
+        .map_err(DistributionError::service_unavailable)?;
     release_url
         .query_pairs_mut()
         .append_pair("platform", platform)
         .append_pair("arch", architecture);
-    api_json(send(client, client.get(release_url)).await?).await
+    let response = send(client, client.get(release_url))
+        .await
+        .map_err(DistributionError::service_unavailable)?;
+    distribution_api_json(response).await
 }
 
 #[tauri::command]
 async fn resolve_latest_release(
     state: tauri::State<'_, ApiState>,
     game_slug: String,
-) -> Result<installer::ReleaseSummary, String> {
-    let client = state.client()?;
+) -> Result<installer::ReleaseSummary, DistributionError> {
+    let client = state
+        .client()
+        .map_err(DistributionError::service_unavailable)?;
     latest_compatible_release(&client, &game_slug).await
 }
 
@@ -708,15 +785,27 @@ async fn resolve_latest_release(
 async fn resolve_install_plan(
     state: tauri::State<'_, ApiState>,
     game_slug: String,
-) -> Result<installer::DistributionPlan, String> {
-    let client = state.client()?;
+) -> Result<installer::DistributionPlan, DistributionError> {
+    let client = state
+        .client()
+        .map_err(DistributionError::service_unavailable)?;
     let release = latest_compatible_release(&client, &game_slug).await?;
-    let manifest_url = install_manifest_url(&release.id, &release.artifact_id)?;
-    let manifest: installer::InstallManifest =
-        api_json(send(&client, client.get(manifest_url)).await?).await?;
-    let download_url = production_api_url(&format!("artifacts/{}/download", release.artifact_id))?;
-    let download: installer::DownloadAuthorization =
-        api_json(send(&client, client.post(download_url)).await?).await?;
+    let manifest_url = install_manifest_url(&release.id, &release.artifact_id)
+        .map_err(DistributionError::service_unavailable)?;
+    let manifest: installer::InstallManifest = distribution_api_json(
+        send(&client, client.get(manifest_url))
+            .await
+            .map_err(DistributionError::service_unavailable)?,
+    )
+    .await?;
+    let download_url = production_api_url(&format!("artifacts/{}/download", release.artifact_id))
+        .map_err(DistributionError::service_unavailable)?;
+    let download: installer::DownloadAuthorization = distribution_api_json(
+        send(&client, client.post(download_url))
+            .await
+            .map_err(DistributionError::service_unavailable)?,
+    )
+    .await?;
     Ok(installer::DistributionPlan {
         game_slug,
         release,
