@@ -80,14 +80,38 @@ pub struct InstalledGame {
     pub title: String,
     pub version: String,
     pub release_id: String,
+    #[serde(default)]
+    pub release_number: u64,
+    #[serde(default)]
+    pub artifact_id: String,
+    #[serde(default)]
+    pub installed_size_bytes: String,
     pub install_directory: String,
     pub entrypoint: String,
     pub installed_at: String,
+    #[serde(default)]
+    pub status: InstallationStatus,
     #[serde(default)]
     pub launch_arguments: Vec<String>,
     pub working_directory: Option<String>,
     #[serde(default)]
     pub environment: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum InstallationStatus {
+    #[default]
+    Installed,
+    RepairNeeded,
+}
+
+#[derive(Debug)]
+struct LaunchPlan {
+    executable: PathBuf,
+    working_directory: PathBuf,
+    arguments: Vec<String>,
+    environment: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -306,6 +330,70 @@ fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn registry_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_directory(app)?.join(REGISTRY_FILE))
+}
+
+fn read_registry_at(path: &Path) -> Result<Vec<InstalledGame>, String> {
+    read_json_or_default(path)
+}
+
+fn write_registry_at(path: &Path, registry: &[InstalledGame]) -> Result<(), String> {
+    write_json_atomic(path, &registry)
+}
+
+fn installation_status(game: &InstalledGame) -> InstallationStatus {
+    let root = PathBuf::from(&game.install_directory);
+    if !root.is_absolute() || !root.is_dir() {
+        return InstallationStatus::RepairNeeded;
+    }
+    let Ok(entrypoint) = safe_relative_path(&game.entrypoint) else {
+        return InstallationStatus::RepairNeeded;
+    };
+    if !root.join(entrypoint).is_file() {
+        return InstallationStatus::RepairNeeded;
+    }
+    if let Some(directory) = &game.working_directory {
+        let Ok(directory) = safe_relative_path(directory) else {
+            return InstallationStatus::RepairNeeded;
+        };
+        if !root.join(directory).is_dir() {
+            return InstallationStatus::RepairNeeded;
+        }
+    }
+    InstallationStatus::Installed
+}
+
+fn reconcile_installations_at(path: &Path) -> Result<Vec<InstalledGame>, String> {
+    let mut registry = read_registry_at(path)?;
+    let mut changed = false;
+    for game in &mut registry {
+        let status = installation_status(game);
+        if game.status != status {
+            game.status = status;
+            changed = true;
+        }
+    }
+    if changed {
+        write_registry_at(path, &registry)?;
+    }
+    Ok(registry)
+}
+
+fn resolve_launch_plan(game: &InstalledGame) -> Result<LaunchPlan, String> {
+    if installation_status(game) != InstallationStatus::Installed {
+        return Err("the installed game needs repair".into());
+    }
+    let root = PathBuf::from(&game.install_directory);
+    let executable = root.join(safe_relative_path(&game.entrypoint)?);
+    let working_directory = match &game.working_directory {
+        Some(directory) => root.join(safe_relative_path(directory)?),
+        None => root,
+    };
+    Ok(LaunchPlan {
+        executable,
+        working_directory,
+        arguments: game.launch_arguments.clone(),
+        environment: game.environment.clone(),
+    })
 }
 
 fn default_install_root(app: &AppHandle) -> Result<PathBuf, String> {
@@ -610,17 +698,21 @@ fn install_archive_at(
         title: title.to_string(),
         version: plan.release.version.clone(),
         release_id: plan.release.id.clone(),
+        release_number: plan.release.release_number,
+        artifact_id: plan.release.artifact_id.clone(),
+        installed_size_bytes: plan.release.installed_size_bytes.clone(),
         install_directory: destination.to_string_lossy().into_owned(),
         entrypoint: plan.manifest.entrypoint.clone(),
         installed_at,
+        status: InstallationStatus::Installed,
         launch_arguments: plan.manifest.launch_arguments.clone(),
         working_directory: plan.manifest.working_directory.clone(),
         environment: plan.manifest.environment.clone(),
     };
-    let mut registry: Vec<InstalledGame> = read_json_or_default(registry_file)?;
+    let mut registry = read_registry_at(registry_file)?;
     registry.retain(|item| item.game_slug != installed.game_slug);
     registry.push(installed.clone());
-    write_json_atomic(registry_file, &registry)?;
+    write_registry_at(registry_file, &registry)?;
     Ok(installed)
 }
 
@@ -722,43 +814,23 @@ pub fn cancel_installation(
 
 #[tauri::command]
 pub fn list_installations(app: AppHandle) -> Result<Vec<InstalledGame>, String> {
-    let path = registry_path(&app)?;
-    let mut registry: Vec<InstalledGame> = read_json_or_default(&path)?;
-    let original_length = registry.len();
-    registry.retain(|game| {
-        let root = PathBuf::from(&game.install_directory);
-        safe_relative_path(&game.entrypoint)
-            .map(|entrypoint| root.join(entrypoint).is_file())
-            .unwrap_or(false)
-    });
-    if registry.len() != original_length {
-        write_json_atomic(&path, &registry)?;
-    }
-    Ok(registry)
+    reconcile_installations_at(&registry_path(&app)?)
 }
 
 #[tauri::command]
 pub fn launch_game(app: AppHandle, game_slug: String) -> Result<(), String> {
     validate_game_slug(&game_slug)?;
-    let registry: Vec<InstalledGame> = read_json_or_default(&registry_path(&app)?)?;
+    let registry = reconcile_installations_at(&registry_path(&app)?)?;
     let game = registry
         .into_iter()
         .find(|item| item.game_slug == game_slug)
         .ok_or("game is not installed")?;
-    let root = PathBuf::from(&game.install_directory);
-    let entrypoint = root.join(safe_relative_path(&game.entrypoint)?);
-    if !entrypoint.is_file() {
-        return Err("the installed game executable is missing".into());
-    }
-    let working_directory = match game.working_directory {
-        Some(directory) => root.join(safe_relative_path(&directory)?),
-        None => root.clone(),
-    };
-    let mut command = Command::new(entrypoint);
+    let launch = resolve_launch_plan(&game)?;
+    let mut command = Command::new(launch.executable);
     command
-        .args(game.launch_arguments)
-        .envs(game.environment)
-        .current_dir(working_directory)
+        .args(launch.arguments)
+        .envs(launch.environment)
+        .current_dir(launch.working_directory)
         .spawn()
         .map_err(|error| format!("could not launch game: {error}"))?;
     Ok(())
@@ -1079,12 +1151,150 @@ mod tests {
                 .unwrap();
 
         assert_eq!(installed.version, "1.0.0");
+        assert_eq!(installed.release_number, 1);
+        assert_eq!(installed.artifact_id, "artifact-1");
+        assert_eq!(installed.installed_size_bytes, "4");
+        assert_eq!(installed.status, InstallationStatus::Installed);
         assert!(install_root.join("test-game/game.exe").is_file());
         let stored: Vec<InstalledGame> = read_json_or_default(&registry).unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].game_slug, "test-game");
         assert!(!install_root.join(".test-game.staging").exists());
         assert!(!install_root.join(".test-game.backup").exists());
+    }
+
+    #[test]
+    fn restart_reconciles_and_preserves_a_valid_installation() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let plan = test_plan("game.exe", 4);
+        install_archive_at(&install_root, &registry, "Test Game", &plan, &archive_path).unwrap();
+
+        let restarted = reconcile_installations_at(&registry).unwrap();
+
+        assert_eq!(restarted.len(), 1);
+        assert_eq!(restarted[0].status, InstallationStatus::Installed);
+        assert_eq!(restarted[0].release_id, "release-1");
+        assert_eq!(restarted[0].artifact_id, "artifact-1");
+    }
+
+    #[test]
+    fn missing_entrypoint_is_retained_as_repair_needed() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let plan = test_plan("game.exe", 4);
+        install_archive_at(&install_root, &registry, "Test Game", &plan, &archive_path).unwrap();
+        fs::remove_file(install_root.join("test-game/game.exe")).unwrap();
+
+        let reconciled = reconcile_installations_at(&registry).unwrap();
+
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(reconciled[0].status, InstallationStatus::RepairNeeded);
+        let persisted = read_registry_at(&registry).unwrap();
+        assert_eq!(persisted[0].status, InstallationStatus::RepairNeeded);
+    }
+
+    #[test]
+    fn launch_plan_uses_the_registered_entrypoint_and_working_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("bin/game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let mut plan = test_plan("bin/game.exe", 4);
+        plan.manifest.working_directory = Some("bin".into());
+        plan.manifest.launch_arguments = vec!["--safe-mode".into()];
+        plan.manifest
+            .environment
+            .insert("MANIFOLD_TEST".into(), "1".into());
+        let installed =
+            install_archive_at(&install_root, &registry, "Test Game", &plan, &archive_path)
+                .unwrap();
+
+        let launch = resolve_launch_plan(&installed).unwrap();
+
+        assert_eq!(
+            launch.executable,
+            install_root.join("test-game/bin/game.exe")
+        );
+        assert_eq!(launch.working_directory, install_root.join("test-game/bin"));
+        assert_eq!(launch.arguments, vec!["--safe-mode"]);
+        assert_eq!(launch.environment.get("MANIFOLD_TEST"), Some(&"1".into()));
+    }
+
+    #[test]
+    fn reinstall_updates_one_registry_record_without_losing_playability() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_archive = directory.path().join("game-v1.zip");
+        let second_archive = directory.path().join("game-v2.zip");
+        write_zip(&first_archive, &[("game.exe", b"old!")]);
+        write_zip(&second_archive, &[("game.exe", b"new!")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let first = test_plan("game.exe", 4);
+        install_archive_at(
+            &install_root,
+            &registry,
+            "Test Game",
+            &first,
+            &first_archive,
+        )
+        .unwrap();
+        let mut second = test_plan("game.exe", 4);
+        second.release.id = "release-2".into();
+        second.release.version = "2.0.0".into();
+        second.release.release_number = 2;
+        second.release.artifact_id = "artifact-2".into();
+        second.manifest.release_id = "release-2".into();
+        second.manifest.artifact_id = "artifact-2".into();
+        second.download.artifact_id = "artifact-2".into();
+
+        install_archive_at(
+            &install_root,
+            &registry,
+            "Test Game",
+            &second,
+            &second_archive,
+        )
+        .unwrap();
+
+        let stored = reconcile_installations_at(&registry).unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].version, "2.0.0");
+        assert_eq!(stored[0].release_number, 2);
+        assert_eq!(stored[0].artifact_id, "artifact-2");
+        assert_eq!(stored[0].status, InstallationStatus::Installed);
+        assert_eq!(
+            fs::read(install_root.join("test-game/game.exe")).unwrap(),
+            b"new!"
+        );
+        assert!(!install_root.join(".test-game.backup").exists());
+    }
+
+    #[test]
+    fn installation_preferences_use_atomic_state_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("installation-preferences.json");
+        let first = StoredPreferences {
+            install_directory: Some("C:\\Games\\Manifold".into()),
+        };
+        let second = StoredPreferences {
+            install_directory: Some("D:\\Games\\Manifold".into()),
+        };
+
+        write_json_atomic(&path, &first).unwrap();
+        write_json_atomic(&path, &second).unwrap();
+
+        let stored: StoredPreferences = read_json_or_default(&path).unwrap();
+        assert_eq!(stored.install_directory, second.install_directory);
+        assert!(!path.with_extension("tmp").exists());
+        assert!(!path.with_extension("bak").exists());
     }
 
     #[test]
