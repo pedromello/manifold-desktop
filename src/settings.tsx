@@ -10,6 +10,9 @@ export function SettingsPage() {
     useState<InstallationPreferences | null>(null);
   const [directory, setDirectory] = useState('');
   const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [errorKey, setErrorKey] = useState<string | null>(null);
 
   useEffect(() => {
     invoke<InstallationPreferences>('get_installation_preferences')
@@ -17,20 +20,34 @@ export function SettingsPage() {
         setPreferences(value);
         setDirectory(value.installDirectory ?? '');
       })
-      .catch(() => setPreferences(null));
+      .catch(() => {
+        setPreferences(null);
+        setErrorKey('settings.loadError');
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    const value = await invoke<InstallationPreferences>(
-      'set_installation_preferences',
-      {
-        installDirectory: directory.trim() || null,
-      },
-    );
-    setPreferences(value);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2500);
+    setSaving(true);
+    setSaved(false);
+    setErrorKey(null);
+    try {
+      const value = await invoke<InstallationPreferences>(
+        'set_installation_preferences',
+        {
+          installDirectory: directory.trim() || null,
+        },
+      );
+      setPreferences(value);
+      setDirectory(value.installDirectory ?? '');
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2500);
+    } catch {
+      setErrorKey('settings.saveError');
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function changeLanguage(language: string) {
@@ -38,8 +55,13 @@ export function SettingsPage() {
   }
 
   async function chooseDirectory() {
-    const selected = await open({ directory: true, multiple: false });
-    if (typeof selected === 'string') setDirectory(selected);
+    setErrorKey(null);
+    try {
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === 'string') setDirectory(selected);
+    } catch {
+      setErrorKey('settings.folderError');
+    }
   }
 
   return (
@@ -51,8 +73,9 @@ export function SettingsPage() {
       <div className="settings-card">
         <label>
           <strong>{t('settings.language')}</strong>
-          <span>{t('settings.languageHelp')}</span>
+          <span id="language-help">{t('settings.languageHelp')}</span>
           <select
+            aria-describedby="language-help"
             value={i18n.language}
             onChange={(event) => void changeLanguage(event.target.value)}
           >
@@ -64,27 +87,46 @@ export function SettingsPage() {
       <form className="settings-card" onSubmit={save}>
         <label>
           <strong>{t('settings.installLocation')}</strong>
-          <span>{t('settings.installHelp')}</span>
+          <span id="install-help">{t('settings.installHelp')}</span>
           <input
+            aria-describedby="install-help install-location-status"
+            aria-label={t('settings.installLocation')}
+            disabled={loading || saving}
             placeholder={preferences?.defaultInstallDirectory ?? ''}
             value={directory}
             onChange={(event) => setDirectory(event.target.value)}
           />
           <button
             className="secondary-action folder-picker"
+            disabled={loading || saving}
             type="button"
             onClick={() => void chooseDirectory()}
           >
             {t('settings.chooseFolder')}
           </button>
-          {!directory && <small>{t('settings.defaultLocation')}</small>}
+          <small id="install-location-status">
+            {loading
+              ? t('settings.loading')
+              : directory
+                ? t('settings.customLocation')
+                : t('settings.defaultLocation')}
+          </small>
         </label>
-        <button className="game-action" type="submit">
-          {t('settings.save')}
+        <button
+          className="game-action"
+          disabled={loading || saving}
+          type="submit"
+        >
+          {saving ? t('settings.saving') : t('settings.save')}
         </button>
         {saved && (
           <span className="settings-saved" role="status">
             {t('settings.saved')}
+          </span>
+        )}
+        {errorKey && (
+          <span className="settings-error" role="alert">
+            {t(errorKey)}
           </span>
         )}
       </form>

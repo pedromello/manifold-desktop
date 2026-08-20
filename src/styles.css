@@ -21,11 +21,22 @@ body {
   min-height: 100vh;
 }
 button,
-input {
+input,
+select {
   font: inherit;
 }
 button {
   cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+}
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 3px solid rgba(125, 249, 255, 0.72);
+  outline-offset: 3px;
 }
 
 .app-shell {
@@ -864,6 +875,15 @@ dt {
   border-radius: 15px;
   background: rgba(255, 255, 255, 0.035);
 }
+.download-item.phase-installed {
+  border-color: rgba(118, 245, 165, 0.22);
+}
+.download-item.phase-failed {
+  border-color: rgba(255, 120, 120, 0.22);
+}
+.download-item.phase-cancelled {
+  opacity: 0.82;
+}
 .download-icon {
   width: 48px;
   height: 48px;
@@ -902,6 +922,15 @@ dt {
   border: 1px solid rgba(255, 255, 255, 0.11);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.05);
+}
+.secondary-action:disabled {
+  opacity: 0.55;
+}
+.download-help {
+  margin: -3px 0 0;
+  color: #958c9f;
+  font-size: 11px;
+  line-height: 1.45;
 }
 .settings-page {
   max-width: 900px;
@@ -942,6 +971,11 @@ dt {
 .settings-saved {
   color: #78eaa2;
   font-size: 12px;
+}
+.settings-error {
+  color: #ffaaaa;
+  font-size: 12px;
+  line-height: 1.45;
 }
 .library-card.skeleton {
   min-height: 330px;

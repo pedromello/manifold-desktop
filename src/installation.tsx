@@ -21,6 +21,7 @@ export type InstallationPhase =
   | 'resolving'
   | 'downloading'
   | 'verifying'
+  | 'extracting'
   | 'installing'
   | 'installed'
   | 'failed'

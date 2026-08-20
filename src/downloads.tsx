@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router-dom';
 import { InstallationPhase, useInstallations } from './installation';
@@ -7,6 +8,7 @@ const activePhases: InstallationPhase[] = [
   'resolving',
   'downloading',
   'verifying',
+  'extracting',
   'installing',
 ];
 
@@ -24,6 +26,19 @@ export function DownloadsPage() {
   const { t, i18n } = useTranslation();
   const { cancel, progress, install } = useInstallations();
   const jobs = Object.values(progress);
+  const [cancelling, setCancelling] = useState<Record<string, boolean>>({});
+  const [cancelErrors, setCancelErrors] = useState<Record<string, boolean>>({});
+
+  async function cancelJob(gameSlug: string) {
+    setCancelling((current) => ({ ...current, [gameSlug]: true }));
+    setCancelErrors((current) => ({ ...current, [gameSlug]: false }));
+    try {
+      await cancel(gameSlug);
+    } catch {
+      setCancelErrors((current) => ({ ...current, [gameSlug]: true }));
+      setCancelling((current) => ({ ...current, [gameSlug]: false }));
+    }
+  }
 
   return (
     <section className="downloads-page" aria-labelledby="downloads-title">
@@ -45,20 +60,38 @@ export function DownloadsPage() {
               (job.downloadedBytes / Math.max(job.totalBytes, 1)) * 100,
             );
             const active = activePhases.includes(job.phase);
+            const statusId = `download-status-${job.gameSlug}`;
             return (
-              <article className="download-item" key={job.gameSlug}>
+              <article
+                aria-labelledby={`download-title-${job.gameSlug}`}
+                className={`download-item phase-${job.phase}`}
+                key={job.gameSlug}
+              >
                 <div className="download-icon">{job.title.slice(0, 1)}</div>
                 <div className="download-content">
                   <div className="download-heading">
                     <div>
-                      <h2>{job.title}</h2>
-                      <span>{t(`downloads.${job.phase}`)}</span>
+                      <h2 id={`download-title-${job.gameSlug}`}>{job.title}</h2>
+                      <span aria-live="polite" id={statusId}>
+                        {cancelling[job.gameSlug]
+                          ? t('downloads.cancelling')
+                          : t(`downloads.${job.phase}`)}
+                      </span>
                     </div>
                     {job.version && <strong>v{job.version}</strong>}
                   </div>
                   {active && (
                     <>
-                      <div className="install-progress">
+                      <div
+                        aria-label={t('downloads.progressLabel', {
+                          title: job.title,
+                        })}
+                        aria-valuemax={100}
+                        aria-valuemin={0}
+                        aria-valuenow={percentage}
+                        className="install-progress"
+                        role="progressbar"
+                      >
                         <span style={{ width: `${percentage}%` }} />
                       </div>
                       <div className="download-meta">
@@ -79,16 +112,30 @@ export function DownloadsPage() {
                   )}
                   {job.error && (
                     <p className="install-error" role="alert">
-                      {job.error}
+                      {t('errors.installFailed')} {t('downloads.failedHelp')}
+                    </p>
+                  )}
+                  {job.phase === 'cancelled' && (
+                    <p className="download-help">
+                      {t('downloads.cancelledHelp')}
+                    </p>
+                  )}
+                  {cancelErrors[job.gameSlug] && (
+                    <p className="install-error" role="alert">
+                      {t('downloads.cancelError')}
                     </p>
                   )}
                 </div>
                 {active ? (
                   <button
+                    aria-describedby={statusId}
                     className="secondary-action"
-                    onClick={() => void cancel(job.gameSlug)}
+                    disabled={cancelling[job.gameSlug]}
+                    onClick={() => void cancelJob(job.gameSlug)}
                   >
-                    {t('downloads.cancel')}
+                    {cancelling[job.gameSlug]
+                      ? t('downloads.cancelling')
+                      : t('downloads.cancel')}
                   </button>
                 ) : job.phase === 'failed' || job.phase === 'cancelled' ? (
                   <button

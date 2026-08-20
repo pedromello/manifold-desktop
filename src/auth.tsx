@@ -13,14 +13,6 @@ type AuthPanelProps = {
   onAuthenticated: (user: AuthUser) => void;
 };
 
-function errorMessage(reason: unknown, fallback: string) {
-  return typeof reason === 'string'
-    ? reason
-    : reason instanceof Error
-      ? reason.message
-      : fallback;
-}
-
 export function AuthPanel({
   initialMode = 'signin',
   onAuthenticated,
@@ -63,8 +55,8 @@ export function AuthPanel({
       await invoke('request_otp', { login: login.trim() });
       setStep('code');
       setResendIn(30);
-    } catch (reason) {
-      setError(errorMessage(reason, t('auth.sendError')));
+    } catch {
+      setError(t('auth.sendError'));
     } finally {
       setBusy(false);
     }
@@ -80,8 +72,8 @@ export function AuthPanel({
         code: code.trim(),
       });
       onAuthenticated(user);
-    } catch (reason) {
-      setError(errorMessage(reason, t('auth.verifyError')));
+    } catch {
+      setError(t('auth.verifyError'));
     } finally {
       setBusy(false);
     }
@@ -93,14 +85,14 @@ export function AuthPanel({
     setSuccess(null);
     setBusy(true);
     try {
-      const result = await invoke<{ message: string }>('create_account', {
+      await invoke<{ message: string }>('create_account', {
         username: username.trim(),
         email: email.trim(),
       });
-      setSuccess(result.message);
+      setSuccess(t('auth.accountCreated'));
       setLogin(email.trim());
-    } catch (reason) {
-      setError(errorMessage(reason, t('auth.createError')));
+    } catch {
+      setError(t('auth.createError'));
     } finally {
       setBusy(false);
     }
