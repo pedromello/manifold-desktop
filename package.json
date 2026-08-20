@@ -11,7 +11,8 @@
     "format:write": "prettier --write .",
     "lint": "eslint .",
     "typecheck": "tsc -b --pretty false",
-    "test": "vitest run"
+    "test": "vitest run",
+    "artifact:preflight": "cargo run --manifest-path src-tauri/Cargo.toml --bin artifact-preflight --"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
