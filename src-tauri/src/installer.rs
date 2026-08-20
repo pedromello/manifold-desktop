@@ -18,6 +18,9 @@ use tokio::io::AsyncWriteExt;
 
 const REGISTRY_FILE: &str = "installations.json";
 const PREFERENCES_FILE: &str = "installation-preferences.json";
+const INSTALLATION_LOG_FILE: &str = "installation.log";
+const MAX_INSTALLATION_LOG_BYTES: u64 = 1_000_000;
+const MAX_DIAGNOSTIC_EVENTS: usize = 100;
 const MAX_ARCHIVE_FILES: usize = 100_000;
 const DOWNLOAD_AUTHORIZATION_EXPIRED: &str = "download authorization expired";
 
@@ -149,6 +152,26 @@ struct StoredPreferences {
 pub struct InstallationPreferences {
     install_directory: Option<String>,
     default_install_directory: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallationDiagnosticEvent {
+    timestamp: u64,
+    game_slug: String,
+    event: String,
+    release_id: Option<String>,
+    artifact_id: Option<String>,
+    version: Option<String>,
+    total_bytes: Option<String>,
+    error_code: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallationDiagnostics {
+    app_version: &'static str,
+    events: Vec<InstallationDiagnosticEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -330,22 +353,107 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
     Ok(())
 }
 
-fn append_install_log(app: &AppHandle, game_slug: &str, outcome: &str) {
-    let Ok(directory) = app_data_directory(app) else {
-        return;
-    };
-    let _ = fs::create_dir_all(&directory);
+fn installation_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_directory(app)?.join(INSTALLATION_LOG_FILE))
+}
+
+fn append_diagnostic_at(path: &Path, event: &InstallationDiagnosticEvent) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create diagnostics directory: {error}"))?;
+    }
+    if path.exists() {
+        let sanitized = read_diagnostics_at(path)?
+            .into_iter()
+            .map(|event| serde_json::to_string(&event))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("could not sanitize diagnostics: {error}"))?;
+        let contents = if sanitized.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", sanitized.join("\n"))
+        };
+        fs::write(path, contents)
+            .map_err(|error| format!("could not sanitize diagnostics: {error}"))?;
+    }
+    if fs::metadata(path)
+        .map(|metadata| metadata.len() >= MAX_INSTALLATION_LOG_BYTES)
+        .unwrap_or(false)
+    {
+        let previous = path.with_extension("previous.log");
+        if previous.exists() {
+            fs::remove_file(&previous)
+                .map_err(|error| format!("could not rotate diagnostics: {error}"))?;
+        }
+        fs::rename(path, previous)
+            .map_err(|error| format!("could not rotate diagnostics: {error}"))?;
+    }
+    let line = serde_json::to_string(event)
+        .map_err(|error| format!("could not serialize diagnostics: {error}"))?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|error| format!("could not open diagnostics: {error}"))?;
+    writeln!(file, "{line}").map_err(|error| format!("could not write diagnostics: {error}"))
+}
+
+fn read_diagnostics_at(path: &Path) -> Result<Vec<InstallationDiagnosticEvent>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("could not read installation diagnostics: {error}"))?;
+    let mut events = contents
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect::<Vec<_>>();
+    if events.len() > MAX_DIAGNOSTIC_EVENTS {
+        events.drain(..events.len() - MAX_DIAGNOSTIC_EVENTS);
+    }
+    Ok(events)
+}
+
+fn classify_install_error(error: &str) -> &'static str {
+    if error == DOWNLOAD_AUTHORIZATION_EXPIRED {
+        "DOWNLOAD_AUTHORIZATION_EXPIRED"
+    } else if error.contains("integrity") || error.contains("checksum") {
+        "INTEGRITY_FAILURE"
+    } else if error.contains("manifest") || error.contains("entrypoint") {
+        "INVALID_ARTIFACT_MANIFEST"
+    } else if error.contains("archive") || error.contains("ZIP") {
+        "INVALID_ARCHIVE"
+    } else if error.contains("download") || error.contains("artifact server") {
+        "DOWNLOAD_FAILED"
+    } else if error.contains("cancelled") {
+        "CANCELLED"
+    } else {
+        "INSTALLATION_FAILED"
+    }
+}
+
+fn append_install_diagnostic(
+    app: &AppHandle,
+    plan: &DistributionPlan,
+    event: &str,
+    error_code: Option<&str>,
+) {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs())
         .unwrap_or(0);
-    if let Ok(mut file) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(directory.join("installation.log"))
-    {
-        let safe_outcome = outcome.replace(['\r', '\n'], " ");
-        let _ = writeln!(file, "{timestamp} {game_slug} {safe_outcome}");
+    let diagnostic = InstallationDiagnosticEvent {
+        timestamp,
+        game_slug: plan.game_slug.clone(),
+        event: event.to_string(),
+        release_id: Some(plan.release.id.clone()),
+        artifact_id: Some(plan.release.artifact_id.clone()),
+        version: Some(plan.release.version.clone()),
+        total_bytes: Some(plan.download.total_size_bytes.clone()),
+        error_code: error_code.map(str::to_string),
+    };
+    if let Ok(path) = installation_log_path(app) {
+        let _ = append_diagnostic_at(&path, &diagnostic);
     }
 }
 
@@ -840,24 +948,29 @@ pub async fn install_game(
     let cancellation = manager
         .begin(&plan.game_slug)
         .map_err(InstallCommandError::from_message)?;
-    append_install_log(&app, &plan.game_slug, "started");
+    append_install_diagnostic(&app, &plan, "STARTED", None);
     let result = install_game_inner(&app, &title, &plan, &cancellation).await;
     manager.finish(&plan.game_slug);
     match &result {
         Ok(_) => {
-            append_install_log(&app, &plan.game_slug, "installed");
+            append_install_diagnostic(&app, &plan, "INSTALLED", None);
             emit_progress(&app, &plan, &title, "installed", 1, 1, None)
         }
         Err(error) if error == "installation cancelled" => {
-            append_install_log(&app, &plan.game_slug, "cancelled");
+            append_install_diagnostic(&app, &plan, "CANCELLED", Some("CANCELLED"));
             emit_progress(&app, &plan, &title, "cancelled", 0, 0, None)
         }
         Err(error) if error == DOWNLOAD_AUTHORIZATION_EXPIRED => {
-            append_install_log(&app, &plan.game_slug, "download authorization expired");
+            append_install_diagnostic(
+                &app,
+                &plan,
+                "AUTHORIZATION_REFRESH_REQUIRED",
+                Some("DOWNLOAD_AUTHORIZATION_EXPIRED"),
+            );
             emit_progress(&app, &plan, &title, "resolving", 0, 0, None)
         }
         Err(error) => {
-            append_install_log(&app, &plan.game_slug, &format!("failed: {error}"));
+            append_install_diagnostic(&app, &plan, "FAILED", Some(classify_install_error(error)));
             emit_progress(&app, &plan, &title, "failed", 0, 0, Some(error.clone()))
         }
     }
@@ -903,6 +1016,14 @@ pub fn get_installation_preferences(app: AppHandle) -> Result<InstallationPrefer
     Ok(InstallationPreferences {
         install_directory: stored.install_directory,
         default_install_directory: default_install_root(&app)?.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub fn get_installation_diagnostics(app: AppHandle) -> Result<InstallationDiagnostics, String> {
+    Ok(InstallationDiagnostics {
+        app_version: env!("CARGO_PKG_VERSION"),
+        events: read_diagnostics_at(&installation_log_path(&app)?)?,
     })
 }
 
@@ -1027,6 +1148,38 @@ mod tests {
         assert_eq!(
             sha256_file(&path).unwrap(),
             "4dd5b6e2bf3bfd4f6a273018b06a65680ef9631f8e0156e6ddd6a06ca0510172"
+        );
+    }
+
+    #[test]
+    fn diagnostics_store_stable_codes_without_sensitive_error_details() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(INSTALLATION_LOG_FILE);
+        let raw_error =
+            "artifact download failed: https://storage.test/file?token=super-secret C:\\Users\\Player";
+        fs::write(&path, format!("legacy log: {raw_error}\n")).unwrap();
+        let event = InstallationDiagnosticEvent {
+            timestamp: 1_776_000_000,
+            game_slug: "test-game".into(),
+            event: "FAILED".into(),
+            release_id: Some("release-1".into()),
+            artifact_id: Some("artifact-1".into()),
+            version: Some("1.0.0".into()),
+            total_bytes: Some("1024".into()),
+            error_code: Some(classify_install_error(raw_error).into()),
+        };
+
+        append_diagnostic_at(&path, &event).unwrap();
+
+        let stored = fs::read_to_string(&path).unwrap();
+        assert!(!stored.contains("super-secret"));
+        assert!(!stored.contains("storage.test"));
+        assert!(!stored.contains("Users"));
+        let diagnostics = read_diagnostics_at(&path).unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(
+            diagnostics[0].error_code.as_deref(),
+            Some("DOWNLOAD_FAILED")
         );
     }
 
