@@ -108,8 +108,8 @@ export function LibraryPage({
   useEffect(() => {
     const installedSlugs = (catalog?.games ?? [])
       .map((game) => game.slug)
-      .filter((slug) => Boolean(installed[slug]));
-    if (installedSlugs.length > 0) void checkForUpdates(installedSlugs);
+      .filter((slug) => installed[slug]?.status === 'INSTALLED');
+    void checkForUpdates(installedSlugs);
   }, [catalog, checkForUpdates, installed]);
 
   if (!user) {
@@ -189,6 +189,7 @@ export function LibraryPage({
                 ].includes(job.phase),
               );
               const installation = installed[game.slug];
+              const needsRepair = installation?.status === 'REPAIR_NEEDED';
               const updateVersion = availableUpdates[game.slug];
               return (
                 <article className="library-card" key={game.libraryId}>
@@ -242,6 +243,8 @@ export function LibraryPage({
                           )}
                           %
                         </strong>
+                      ) : needsRepair ? (
+                        <strong>{t('library.repairNeeded')}</strong>
                       ) : installation ? (
                         <strong>v{installation.version}</strong>
                       ) : null}
@@ -262,20 +265,22 @@ export function LibraryPage({
                       className="game-action"
                       disabled={isBusy}
                       onClick={() =>
-                        installation && !updateVersion
+                        installation && !needsRepair && !updateVersion
                           ? void launch(game.slug)
                           : void install(game.slug, game.title)
                       }
                     >
                       {isBusy
                         ? t('library.installing')
-                        : updateVersion
-                          ? t('library.update')
-                          : installation
-                            ? t('library.play')
-                            : job?.phase === 'failed'
-                              ? t('library.retryInstall')
-                              : t('library.install')}
+                        : needsRepair
+                          ? t('library.repair')
+                          : updateVersion
+                            ? t('library.update')
+                            : installation
+                              ? t('library.play')
+                              : job?.phase === 'failed'
+                                ? t('library.retryInstall')
+                                : t('library.install')}
                     </button>
                     {job?.phase === 'failed' && job.error && (
                       <p className="install-error" role="alert">

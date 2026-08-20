@@ -14,6 +14,7 @@ import {
   DistributionPlan,
   productionDistributionAdapter,
 } from './distribution';
+import type { ReleaseSummary } from './contracts/desktop-v1';
 
 export type InstallationPhase =
   | 'queued'
@@ -40,9 +41,13 @@ export type InstalledGame = {
   title: string;
   version: string;
   releaseId: string;
+  releaseNumber: number;
+  artifactId: string;
+  installedSizeBytes: string;
   installDirectory: string;
   entrypoint: string;
   installedAt: string;
+  status: 'INSTALLED' | 'REPAIR_NEEDED';
 };
 
 export type InstallationPreferences = {
@@ -71,6 +76,17 @@ function message(reason: unknown) {
     : reason instanceof Error
       ? reason.message
       : 'Installation failed';
+}
+
+export function isUpdateAvailable(
+  current: InstalledGame,
+  release: ReleaseSummary,
+) {
+  return (
+    current.status === 'INSTALLED' &&
+    release.id !== current.releaseId &&
+    release.release_number > current.releaseNumber
+  );
 }
 
 export function InstallationProvider({
@@ -173,7 +189,7 @@ export function InstallationProvider({
           const current = installed[gameSlug];
           if (!current) return;
           const release = await adapter.latest(gameSlug);
-          if (release.id !== current.releaseId) {
+          if (isUpdateAvailable(current, release)) {
             updates[gameSlug] = release.version;
           }
         }),
