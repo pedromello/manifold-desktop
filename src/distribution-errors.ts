@@ -3,7 +3,8 @@ import {
   type DesktopErrorCode,
 } from './contracts/desktop-v1';
 
-export type DistributionErrorCode = DesktopErrorCode | 'INSTALLATION_FAILED';
+export type DistributionErrorCode =
+  DesktopErrorCode | 'DOWNLOAD_AUTHORIZATION_EXPIRED' | 'INSTALLATION_FAILED';
 
 export type DistributionFailure = {
   code: DistributionErrorCode;
@@ -26,14 +27,19 @@ export function normalizeDistributionFailure(
   const value = candidate(reason);
   if (value && typeof value === 'object') {
     const error = value as Record<string, unknown>;
-    const code = desktopErrorCodeSchema.safeParse(error.code);
+    const apiCode = desktopErrorCodeSchema.safeParse(error.code);
+    const code = apiCode.success
+      ? apiCode.data
+      : error.code === 'DOWNLOAD_AUTHORIZATION_EXPIRED'
+        ? error.code
+        : null;
     if (
-      code.success &&
+      code &&
       typeof error.message === 'string' &&
       typeof error.retryable === 'boolean'
     ) {
       return {
-        code: code.data,
+        code,
         message: error.message,
         retryable: error.retryable,
       };
@@ -70,6 +76,8 @@ export function distributionErrorKey(code?: DistributionErrorCode) {
       return 'errors.integrityFailure';
     case 'RATE_LIMITED':
       return 'errors.rateLimited';
+    case 'DOWNLOAD_AUTHORIZATION_EXPIRED':
+      return 'errors.downloadAuthorizationExpired';
     case 'SERVICE_UNAVAILABLE':
       return 'errors.serviceUnavailable';
     case 'INVALID_REQUEST':

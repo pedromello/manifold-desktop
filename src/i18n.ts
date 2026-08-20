@@ -197,6 +197,8 @@ const resources = {
         integrityFailure:
           'O pacote publicado falhou na verificação de integridade.',
         rateLimited: 'Muitas tentativas. Aguarde um momento e tente novamente.',
+        downloadAuthorizationExpired:
+          'A autorização do download expirou. Tente novamente para continuar de onde parou.',
         serviceUnavailable:
           'O serviço de distribuição está temporariamente indisponível.',
         incompatibleResponse:
@@ -386,6 +388,8 @@ const resources = {
         integrityFailure:
           'The published package failed its integrity verification.',
         rateLimited: 'Too many attempts. Wait a moment and try again.',
+        downloadAuthorizationExpired:
+          'The download authorization expired. Try again to continue where it stopped.',
         serviceUnavailable:
           'The distribution service is temporarily unavailable.',
         incompatibleResponse:

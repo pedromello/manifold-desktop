@@ -19,6 +19,7 @@ import {
   normalizeDistributionFailure,
 } from './distribution-errors';
 import type { ReleaseSummary } from './contracts/desktop-v1';
+import { installWithAuthorizationRefresh } from './installation-retry';
 
 export type InstallationPhase =
   | 'queued'
@@ -146,10 +147,17 @@ export function InstallationProvider({
           error: null,
         },
       }));
-      let plan: DistributionPlan;
       try {
-        plan = await adapter.resolve(gameSlug);
-        await invoke<InstalledGame>('install_game', { title, plan });
+        await installWithAuthorizationRefresh(
+          adapter,
+          gameSlug,
+          title,
+          (resolvedTitle, plan: DistributionPlan) =>
+            invoke<InstalledGame>('install_game', {
+              title: resolvedTitle,
+              plan,
+            }),
+        );
         await refresh();
       } catch (reason) {
         const failure = normalizeDistributionFailure(reason);
