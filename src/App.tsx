@@ -8,7 +8,15 @@ import { appConfig } from './config';
 import { DownloadsPage } from './downloads';
 import { InstallationProvider } from './installation';
 import { LibraryPage } from './library';
+import {
+  isPublisherError,
+  publisherAdapter,
+  publisherFixturesEnabled,
+  PublisherStudio,
+} from './publishing';
+import { ReleaseWizardRoute } from './release-wizard';
 import { SettingsPage } from './settings';
+import { StudioGamePage, StudioPage } from './studio';
 
 type AppInfo = {
   version: string;
@@ -280,14 +288,50 @@ function AppShell() {
   const { t } = useTranslation();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const [studios, setStudios] = useState<PublisherStudio[]>([]);
   const [online, setOnline] = useState(navigator.onLine);
 
   useEffect(() => {
+    if (publisherFixturesEnabled) {
+      setUser({
+        id: 'fixture-user',
+        username: 'publisher',
+        email: 'publisher@example.test',
+      });
+      setCheckingSession(false);
+      return;
+    }
     invoke<AuthUser | null>('current_user')
       .then(setUser)
       .catch(() => setUser(null))
       .finally(() => setCheckingSession(false));
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setStudios([]);
+      return;
+    }
+    let active = true;
+    publisherAdapter
+      .listStudios()
+      .then((values) => {
+        if (active) setStudios(values);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setStudios([]);
+        if (
+          isPublisherError(error) &&
+          error.code === 'AUTHENTICATION_REQUIRED'
+        ) {
+          setUser(null);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   useEffect(() => {
     const connected = () => setOnline(true);
@@ -300,7 +344,10 @@ function AppShell() {
     };
   }, []);
 
-  const expireSession = useCallback(() => setUser(null), []);
+  const expireSession = useCallback(() => {
+    setUser(null);
+    setStudios([]);
+  }, []);
 
   async function handleLogout() {
     try {
@@ -314,6 +361,7 @@ function AppShell() {
     { label: t('nav.store'), to: '/' },
     { label: t('nav.library'), to: '/library' },
     { label: t('nav.downloads'), to: '/downloads' },
+    ...(studios.length > 0 ? [{ label: t('nav.studio'), to: '/studio' }] : []),
   ];
 
   return (
@@ -388,6 +436,55 @@ function AppShell() {
                 <Navigate replace to="/library" />
               ) : (
                 <AuthPanel initialMode="signup" onAuthenticated={setUser} />
+              )
+            }
+          />
+          <Route
+            path="/studio"
+            element={
+              user && studios.length > 0 ? (
+                <StudioPage studios={studios} onUnauthorized={expireSession} />
+              ) : (
+                <Navigate replace to={user ? '/library' : '/login'} />
+              )
+            }
+          />
+          <Route
+            path="/studio/:studioSlug/games/:gameSlug"
+            element={
+              user && studios.length > 0 ? (
+                <StudioGamePage
+                  studios={studios}
+                  onUnauthorized={expireSession}
+                />
+              ) : (
+                <Navigate replace to={user ? '/library' : '/login'} />
+              )
+            }
+          />
+          <Route
+            path="/studio/:studioSlug/games/:gameSlug/releases/new"
+            element={
+              user && studios.length > 0 ? (
+                <ReleaseWizardRoute
+                  studios={studios}
+                  onUnauthorized={expireSession}
+                />
+              ) : (
+                <Navigate replace to={user ? '/library' : '/login'} />
+              )
+            }
+          />
+          <Route
+            path="/studio/:studioSlug/games/:gameSlug/releases/:releaseId"
+            element={
+              user && studios.length > 0 ? (
+                <ReleaseWizardRoute
+                  studios={studios}
+                  onUnauthorized={expireSession}
+                />
+              ) : (
+                <Navigate replace to={user ? '/library' : '/login'} />
               )
             }
           />

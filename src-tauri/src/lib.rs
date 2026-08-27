@@ -7,6 +7,7 @@ use std::{
 };
 
 mod installer;
+pub mod publisher;
 
 const ENVIRONMENTS: [&str; 3] = ["development", "staging", "production"];
 const API_PATH: &str = "/api/v1";
@@ -821,6 +822,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(api_state)
         .manage(installer::InstallationManager::new())
+        .manage(publisher::PublishUploadManager::new())
         .invoke_handler(tauri::generate_handler![
             application_info,
             list_store_games,
@@ -832,6 +834,14 @@ pub fn run() {
             list_library,
             resolve_latest_release,
             resolve_install_plan,
+            publisher::list_publisher_studios,
+            publisher::list_studio_games,
+            publisher::list_game_releases,
+            publisher::create_release_draft,
+            publisher::update_release_draft,
+            publisher::inspect_publish_archive,
+            publisher::publish_release,
+            publisher::cancel_publish_upload,
             installer::install_game,
             installer::cancel_installation,
             installer::list_installations,
