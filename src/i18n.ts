@@ -28,7 +28,7 @@ const resources = {
         store: 'Loja',
         library: 'Biblioteca',
         downloads: 'Downloads',
-        studio: 'Estúdio',
+        studio: 'Studios',
         settings: 'Configurações',
         about: 'Sobre',
         primary: 'Navegação principal',
