@@ -3,7 +3,11 @@ import type { DistributionAdapter, DistributionPlan } from './distribution';
 import { normalizeDistributionFailure } from './distribution-errors';
 
 const AUTHORIZATION_SAFETY_WINDOW_MS = 60_000;
-const MAX_AUTHORIZATION_REFRESHES = 2;
+const MAX_DOWNLOAD_RECOVERIES = 8;
+const recoverableDownloadCodes = new Set([
+  'DOWNLOAD_AUTHORIZATION_EXPIRED',
+  'DOWNLOAD_INTERRUPTED',
+]);
 
 export type InstallInvoker = (
   title: string,
@@ -26,18 +30,18 @@ export async function installWithAuthorizationRefresh(
   install: InstallInvoker,
   now = () => Date.now(),
 ) {
-  let refreshes = 0;
+  let recoveries = 0;
   let plan = await adapter.resolve(gameSlug);
 
   while (authorizationExpiresSoon(plan, now())) {
-    if (refreshes >= MAX_AUTHORIZATION_REFRESHES) {
+    if (recoveries >= MAX_DOWNLOAD_RECOVERIES) {
       throw {
         code: 'DOWNLOAD_AUTHORIZATION_EXPIRED',
         message: 'download authorization expired before the transfer started',
         retryable: true,
       };
     }
-    refreshes += 1;
+    recoveries += 1;
     plan = await adapter.resolve(gameSlug);
   }
 
@@ -47,12 +51,12 @@ export async function installWithAuthorizationRefresh(
     } catch (reason) {
       const failure = normalizeDistributionFailure(reason);
       if (
-        failure.code !== 'DOWNLOAD_AUTHORIZATION_EXPIRED' ||
-        refreshes >= MAX_AUTHORIZATION_REFRESHES
+        !recoverableDownloadCodes.has(failure.code) ||
+        recoveries >= MAX_DOWNLOAD_RECOVERIES
       ) {
         throw reason;
       }
-      refreshes += 1;
+      recoveries += 1;
       plan = await adapter.resolve(gameSlug);
     }
   }

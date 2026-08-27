@@ -37,3 +37,20 @@ it('accepts serialized Tauri errors and safely classifies unknown failures', () 
     retryable: true,
   });
 });
+
+it('preserves the native interrupted-download recovery code', () => {
+  expect(
+    normalizeDistributionFailure({
+      code: 'DOWNLOAD_INTERRUPTED',
+      message: 'interrupted',
+      retryable: true,
+    }),
+  ).toEqual({
+    code: 'DOWNLOAD_INTERRUPTED',
+    message: 'interrupted',
+    retryable: true,
+  });
+  expect(distributionErrorKey('DOWNLOAD_INTERRUPTED')).toBe(
+    'errors.downloadInterrupted',
+  );
+});
