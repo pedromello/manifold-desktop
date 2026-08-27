@@ -48,6 +48,11 @@ export type InstallationProgress = {
   estimatedSecondsRemaining?: number;
 };
 
+type GameProcessState = {
+  gameSlug: string;
+  running: boolean;
+};
+
 export type InstalledGame = {
   gameSlug: string;
   title: string;
@@ -106,6 +111,7 @@ export function normalizeUninstallFailure(reason: unknown): UninstallFailure {
 type InstallationContextValue = {
   progress: Record<string, InstallationProgress>;
   installed: Record<string, InstalledGame>;
+  playing: Record<string, boolean>;
   availableUpdates: Record<string, string>;
   install: (gameSlug: string, title: string) => Promise<void>;
   cancel: (gameSlug: string) => Promise<void>;
@@ -138,6 +144,7 @@ export function InstallationProvider({
     Record<string, InstallationProgress>
   >({});
   const [installed, setInstalled] = useState<Record<string, InstalledGame>>({});
+  const [playing, setPlaying] = useState<Record<string, boolean>>({});
   const [availableUpdates, setAvailableUpdates] = useState<
     Record<string, string>
   >({});
@@ -154,10 +161,22 @@ export function InstallationProvider({
     }
   }, []);
 
+  const refreshPlaying = useCallback(async () => {
+    try {
+      const gameSlugs = await invoke<string[]>('list_running_games');
+      setPlaying(
+        Object.fromEntries(gameSlugs.map((gameSlug) => [gameSlug, true])),
+      );
+    } catch {
+      setPlaying({});
+    }
+  }, []);
+
   useEffect(() => {
     void refresh();
+    void refreshPlaying();
     let active = true;
-    let dispose: (() => void) | undefined;
+    const disposers: Array<() => void> = [];
     void listen<InstallationProgress>('installation-progress', (event) => {
       if (!active) return;
       const update = event.payload;
@@ -184,15 +203,30 @@ export function InstallationProvider({
       if (update.phase === 'installed') void refresh();
     })
       .then((unlisten) => {
-        if (active) dispose = unlisten;
+        if (active) disposers.push(unlisten);
+        else unlisten();
+      })
+      .catch(() => undefined);
+    void listen<GameProcessState>('game-process-state', (event) => {
+      if (!active) return;
+      const update = event.payload;
+      setPlaying((current) => {
+        const next = { ...current };
+        if (update.running) next[update.gameSlug] = true;
+        else delete next[update.gameSlug];
+        return next;
+      });
+    })
+      .then((unlisten) => {
+        if (active) disposers.push(unlisten);
         else unlisten();
       })
       .catch(() => undefined);
     return () => {
       active = false;
-      dispose?.();
+      disposers.forEach((dispose) => dispose());
     };
-  }, [refresh]);
+  }, [refresh, refreshPlaying]);
 
   const install = useCallback(
     async (gameSlug: string, title: string) => {
@@ -249,9 +283,13 @@ export function InstallationProvider({
     await invoke('cancel_installation', { gameSlug });
   }, []);
 
-  const launch = useCallback(async (gameSlug: string) => {
-    await invoke('launch_game', { gameSlug });
-  }, []);
+  const launch = useCallback(
+    async (gameSlug: string) => {
+      await invoke('launch_game', { gameSlug });
+      await refreshPlaying();
+    },
+    [refreshPlaying],
+  );
 
   const uninstall = useCallback(async (gameSlug: string) => {
     await invoke('uninstall_game', { gameSlug });
@@ -295,6 +333,7 @@ export function InstallationProvider({
     () => ({
       progress,
       installed,
+      playing,
       availableUpdates,
       install,
       cancel,
@@ -310,6 +349,7 @@ export function InstallationProvider({
       install,
       installed,
       launch,
+      playing,
       progress,
       refresh,
       uninstall,

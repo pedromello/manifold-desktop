@@ -81,6 +81,7 @@ export function LibraryPage({
     install,
     installed,
     launch,
+    playing,
     progress,
     uninstall,
   } = useInstallations();
@@ -185,6 +186,7 @@ export function LibraryPage({
     const installation = installed[game.slug];
     const needsRepair = installation?.status === 'REPAIR_NEEDED';
     const updateVersion = availableUpdates[game.slug];
+    if (playing[game.slug]) return;
     setLaunchErrors((current) => ({ ...current, [game.slug]: false }));
     if (installation && !needsRepair && !updateVersion) {
       setLaunchingSlug(game.slug);
@@ -301,6 +303,7 @@ export function LibraryPage({
                 const needsRepair = installation?.status === 'REPAIR_NEEDED';
                 const updateVersion = availableUpdates[game.slug];
                 const isLaunching = launchingSlug === game.slug;
+                const isPlaying = Boolean(playing[game.slug]);
                 const progressLabel = job ? t(`downloads.${job.phase}`) : null;
                 const installFeedbackId = `install-feedback-${game.slug}`;
                 const launchFeedbackId = `launch-feedback-${game.slug}`;
@@ -395,22 +398,24 @@ export function LibraryPage({
                             .filter(Boolean)
                             .join(' ') || undefined
                         }
-                        disabled={isBusy || isLaunching}
+                        disabled={isBusy || isLaunching || isPlaying}
                         onClick={() => void handleGameAction(game)}
                       >
                         {isBusy
                           ? progressLabel
-                          : isLaunching
-                            ? t('library.launching')
-                            : needsRepair
-                              ? t('library.repair')
-                              : updateVersion
-                                ? t('library.update')
-                                : installation
-                                  ? t('library.play')
-                                  : job?.phase === 'failed'
-                                    ? t('library.retryInstall')
-                                    : t('library.install')}
+                          : isPlaying
+                            ? t('library.playing')
+                            : isLaunching
+                              ? t('library.launching')
+                              : needsRepair
+                                ? t('library.repair')
+                                : updateVersion
+                                  ? t('library.update')
+                                  : installation
+                                    ? t('library.play')
+                                    : job?.phase === 'failed'
+                                      ? t('library.retryInstall')
+                                      : t('library.install')}
                       </button>
                       {installation && (
                         <button

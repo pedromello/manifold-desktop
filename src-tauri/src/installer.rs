@@ -243,11 +243,18 @@ struct InstallationProgress {
     error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GameProcessState {
+    game_slug: String,
+    running: bool,
+}
+
 #[derive(Default)]
 struct InstallationManagerState {
     cancellations: HashMap<String, Arc<AtomicBool>>,
     uninstalling: HashSet<String>,
-    processes: HashMap<String, Child>,
+    running_games: HashSet<String>,
 }
 
 pub struct InstallationManager {
@@ -272,7 +279,7 @@ impl InstallationManager {
         if state.uninstalling.contains(game_slug) {
             return Err(UNINSTALL_IN_PROGRESS.into());
         }
-        if Self::process_is_running(&mut state, game_slug)? {
+        if state.running_games.contains(game_slug) {
             return Err(GAME_RUNNING.into());
         }
         let cancellation = Arc::new(AtomicBool::new(false));
@@ -312,7 +319,7 @@ impl InstallationManager {
         if state.uninstalling.contains(game_slug) {
             return Err(UNINSTALL_IN_PROGRESS.into());
         }
-        if Self::process_is_running(&mut state, game_slug)? {
+        if state.running_games.contains(game_slug) {
             return Err(GAME_RUNNING.into());
         }
         state.uninstalling.insert(game_slug.to_string());
@@ -325,7 +332,7 @@ impl InstallationManager {
         }
     }
 
-    fn launch(&self, game_slug: &str, command: &mut Command) -> Result<(), String> {
+    fn launch(&self, game_slug: &str, command: &mut Command) -> Result<Child, String> {
         let mut state = self
             .state
             .lock()
@@ -336,31 +343,28 @@ impl InstallationManager {
         if state.uninstalling.contains(game_slug) {
             return Err(UNINSTALL_IN_PROGRESS.into());
         }
-        if Self::process_is_running(&mut state, game_slug)? {
+        if state.running_games.contains(game_slug) {
             return Err(GAME_RUNNING.into());
         }
         let child = command
             .spawn()
             .map_err(|error| format!("could not launch game: {error}"))?;
-        state.processes.insert(game_slug.to_string(), child);
-        Ok(())
+        state.running_games.insert(game_slug.to_string());
+        Ok(child)
     }
 
-    fn process_is_running(
-        state: &mut InstallationManagerState,
-        game_slug: &str,
-    ) -> Result<bool, String> {
-        let Some(child) = state.processes.get_mut(game_slug) else {
-            return Ok(false);
-        };
-        match child.try_wait() {
-            Ok(None) => Ok(true),
-            Ok(Some(_)) => {
-                state.processes.remove(game_slug);
-                Ok(false)
-            }
-            Err(error) => Err(format!("could not inspect the game process: {error}")),
+    fn finish_process(&self, game_slug: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state.running_games.remove(game_slug);
         }
+    }
+
+    fn running_games(&self) -> Result<Vec<String>, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "the installation manager is unavailable".to_string())?;
+        Ok(state.running_games.iter().cloned().collect())
     }
 }
 
@@ -981,6 +985,16 @@ fn emit_progress(
             total_bytes,
             version: Some(plan.release.version.clone()),
             error,
+        },
+    );
+}
+
+fn emit_game_process_state(app: &AppHandle, game_slug: &str, running: bool) {
+    let _ = app.emit(
+        "game-process-state",
+        GameProcessState {
+            game_slug: game_slug.to_string(),
+            running,
         },
     );
 }
@@ -1632,7 +1646,25 @@ pub fn launch_game(
         .args(launch.arguments)
         .envs(launch.environment)
         .current_dir(launch.working_directory);
-    manager.launch(&game_slug, &mut command)
+    let mut child = manager.launch(&game_slug, &mut command)?;
+    emit_game_process_state(&app, &game_slug, true);
+    let watcher_app = app.clone();
+    let watcher_slug = game_slug.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        watcher_app
+            .state::<InstallationManager>()
+            .finish_process(&watcher_slug);
+        emit_game_process_state(&watcher_app, &watcher_slug, false);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_running_games(
+    manager: tauri::State<'_, InstallationManager>,
+) -> Result<Vec<String>, String> {
+    manager.running_games()
 }
 
 #[tauri::command]
@@ -2459,33 +2491,33 @@ mod tests {
     fn manager_blocks_uninstall_while_a_launched_game_is_running() {
         let manager = InstallationManager::new();
         #[cfg(windows)]
-        let child = Command::new("cmd")
-            .args(["/C", "ping 127.0.0.1 -n 6 > NUL"])
-            .spawn()
-            .unwrap();
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "ping 127.0.0.1 -n 6 > NUL"]);
+            command
+        };
         #[cfg(not(windows))]
-        let child = Command::new("sh").args(["-c", "sleep 5"]).spawn().unwrap();
-        manager
-            .state
-            .lock()
-            .unwrap()
-            .processes
-            .insert("test-game".into(), child);
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 5"]);
+            command
+        };
+        let mut child = manager.launch("test-game", &mut command).unwrap();
 
         assert_eq!(
             manager.begin_uninstall("test-game").unwrap_err(),
             GAME_RUNNING
         );
+        assert_eq!(manager.running_games().unwrap(), vec!["test-game"]);
+        assert_eq!(
+            manager.launch("test-game", &mut command).unwrap_err(),
+            GAME_RUNNING
+        );
 
-        let mut child = manager
-            .state
-            .lock()
-            .unwrap()
-            .processes
-            .remove("test-game")
-            .unwrap();
         child.kill().unwrap();
         child.wait().unwrap();
+        manager.finish_process("test-game");
+        assert!(manager.running_games().unwrap().is_empty());
     }
 
     #[test]
@@ -2702,5 +2734,17 @@ mod tests {
         assert_eq!(value["totalBytes"], 8);
         assert_eq!(value["phase"], "failed");
         assert_eq!(value["error"], "network unavailable");
+    }
+
+    #[test]
+    fn process_events_keep_the_frontend_contract_stable() {
+        let value = serde_json::to_value(GameProcessState {
+            game_slug: "test-game".into(),
+            running: true,
+        })
+        .unwrap();
+
+        assert_eq!(value["gameSlug"], "test-game");
+        assert_eq!(value["running"], true);
     }
 }
