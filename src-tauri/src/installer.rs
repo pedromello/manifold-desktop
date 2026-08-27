@@ -2,11 +2,11 @@ use futures_util::StreamExt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, File},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Child, Command},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -19,6 +19,7 @@ use tokio::io::AsyncWriteExt;
 const REGISTRY_FILE: &str = "installations.json";
 const PREFERENCES_FILE: &str = "installation-preferences.json";
 const INSTALLATION_LOG_FILE: &str = "installation.log";
+const PENDING_UNINSTALLS_FILE: &str = "pending-uninstalls.json";
 const MAX_INSTALLATION_LOG_BYTES: u64 = 1_000_000;
 const MAX_DIAGNOSTIC_EVENTS: usize = 100;
 const MAX_ARCHIVE_FILES: usize = 100_000;
@@ -27,6 +28,10 @@ const DOWNLOAD_INTERRUPTED: &str = "download interrupted after automatic retries
 const MAX_TRANSIENT_DOWNLOAD_RETRIES: u32 = 4;
 const DOWNLOAD_RETRY_BASE_DELAY_MS: u64 = 200;
 const DOWNLOAD_RETRY_MAX_DELAY_MS: u64 = 3_000;
+const ACTIVE_INSTALLATION: &str = "an installation is already running for this game";
+const GAME_RUNNING: &str = "the game is currently running";
+const UNINSTALL_IN_PROGRESS: &str = "an uninstall is already running for this game";
+const NOT_INSTALLED: &str = "game is not installed";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +39,41 @@ pub struct InstallCommandError {
     code: String,
     message: String,
     retryable: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallCommandError {
+    code: String,
+    message: String,
+    retryable: bool,
+}
+
+impl UninstallCommandError {
+    fn from_message(message: String) -> Self {
+        let (code, retryable) = if message == GAME_RUNNING {
+            ("GAME_RUNNING", true)
+        } else if message == ACTIVE_INSTALLATION || message == UNINSTALL_IN_PROGRESS {
+            ("INSTALLATION_ACTIVE", true)
+        } else if message == NOT_INSTALLED {
+            ("NOT_INSTALLED", false)
+        } else if message == "invalid game slug" {
+            ("INVALID_GAME", false)
+        } else if message.starts_with("unsafe uninstall path") {
+            ("UNSAFE_INSTALLATION_PATH", false)
+        } else if message.contains("local uninstall state")
+            || message.contains("installation registry")
+        {
+            ("LOCAL_STATE_ERROR", true)
+        } else {
+            ("FILESYSTEM_ERROR", true)
+        };
+        Self {
+            code: code.into(),
+            message,
+            retryable,
+        }
+    }
 }
 
 impl InstallCommandError {
@@ -177,6 +217,20 @@ pub struct InstallationDiagnostics {
     events: Vec<InstallationDiagnosticEvent>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingUninstall {
+    game_slug: String,
+    install_directory: String,
+    artifact_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallResult {
+    game_slug: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InstallationProgress {
@@ -189,46 +243,124 @@ struct InstallationProgress {
     error: Option<String>,
 }
 
+#[derive(Default)]
+struct InstallationManagerState {
+    cancellations: HashMap<String, Arc<AtomicBool>>,
+    uninstalling: HashSet<String>,
+    processes: HashMap<String, Child>,
+}
+
 pub struct InstallationManager {
-    cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    state: Mutex<InstallationManagerState>,
 }
 
 impl InstallationManager {
     pub fn new() -> Self {
         Self {
-            cancellations: Mutex::new(HashMap::new()),
+            state: Mutex::new(InstallationManagerState::default()),
         }
     }
 
     fn begin(&self, game_slug: &str) -> Result<Arc<AtomicBool>, String> {
-        let mut jobs = self
-            .cancellations
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| "the installation manager is unavailable".to_string())?;
-        if jobs.contains_key(game_slug) {
-            return Err("an installation is already running for this game".into());
+        if state.cancellations.contains_key(game_slug) {
+            return Err(ACTIVE_INSTALLATION.into());
+        }
+        if state.uninstalling.contains(game_slug) {
+            return Err(UNINSTALL_IN_PROGRESS.into());
+        }
+        if Self::process_is_running(&mut state, game_slug)? {
+            return Err(GAME_RUNNING.into());
         }
         let cancellation = Arc::new(AtomicBool::new(false));
-        jobs.insert(game_slug.to_string(), cancellation.clone());
+        state
+            .cancellations
+            .insert(game_slug.to_string(), cancellation.clone());
         Ok(cancellation)
     }
 
     fn finish(&self, game_slug: &str) {
-        if let Ok(mut jobs) = self.cancellations.lock() {
-            jobs.remove(game_slug);
+        if let Ok(mut state) = self.state.lock() {
+            state.cancellations.remove(game_slug);
         }
     }
 
     fn cancel(&self, game_slug: &str) -> Result<(), String> {
-        let jobs = self
-            .cancellations
+        let state = self
+            .state
             .lock()
             .map_err(|_| "the installation manager is unavailable".to_string())?;
-        let cancellation = jobs
+        let cancellation = state
+            .cancellations
             .get(game_slug)
             .ok_or("no active installation was found for this game")?;
         cancellation.store(true, Ordering::Relaxed);
         Ok(())
+    }
+
+    fn begin_uninstall(&self, game_slug: &str) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "the installation manager is unavailable".to_string())?;
+        if state.cancellations.contains_key(game_slug) {
+            return Err(ACTIVE_INSTALLATION.into());
+        }
+        if state.uninstalling.contains(game_slug) {
+            return Err(UNINSTALL_IN_PROGRESS.into());
+        }
+        if Self::process_is_running(&mut state, game_slug)? {
+            return Err(GAME_RUNNING.into());
+        }
+        state.uninstalling.insert(game_slug.to_string());
+        Ok(())
+    }
+
+    fn finish_uninstall(&self, game_slug: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state.uninstalling.remove(game_slug);
+        }
+    }
+
+    fn launch(&self, game_slug: &str, command: &mut Command) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "the installation manager is unavailable".to_string())?;
+        if state.cancellations.contains_key(game_slug) {
+            return Err(ACTIVE_INSTALLATION.into());
+        }
+        if state.uninstalling.contains(game_slug) {
+            return Err(UNINSTALL_IN_PROGRESS.into());
+        }
+        if Self::process_is_running(&mut state, game_slug)? {
+            return Err(GAME_RUNNING.into());
+        }
+        let child = command
+            .spawn()
+            .map_err(|error| format!("could not launch game: {error}"))?;
+        state.processes.insert(game_slug.to_string(), child);
+        Ok(())
+    }
+
+    fn process_is_running(
+        state: &mut InstallationManagerState,
+        game_slug: &str,
+    ) -> Result<bool, String> {
+        let Some(child) = state.processes.get_mut(game_slug) else {
+            return Ok(false);
+        };
+        match child.try_wait() {
+            Ok(None) => Ok(true),
+            Ok(Some(_)) => {
+                state.processes.remove(game_slug);
+                Ok(false)
+            }
+            Err(error) => Err(format!("could not inspect the game process: {error}")),
+        }
     }
 }
 
@@ -460,6 +592,31 @@ fn append_install_diagnostic(
     }
 }
 
+fn append_uninstall_diagnostic(
+    app: &AppHandle,
+    game_slug: &str,
+    event: &str,
+    error_code: Option<&str>,
+) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    let diagnostic = InstallationDiagnosticEvent {
+        timestamp,
+        game_slug: game_slug.to_string(),
+        event: event.to_string(),
+        release_id: None,
+        artifact_id: None,
+        version: None,
+        total_bytes: None,
+        error_code: error_code.map(str::to_string),
+    };
+    if let Ok(path) = installation_log_path(app) {
+        let _ = append_diagnostic_at(&path, &diagnostic);
+    }
+}
+
 fn preferences_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_directory(app)?.join(PREFERENCES_FILE))
 }
@@ -468,12 +625,257 @@ fn registry_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_directory(app)?.join(REGISTRY_FILE))
 }
 
+fn pending_uninstalls_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_data_directory(app)?.join(PENDING_UNINSTALLS_FILE))
+}
+
 fn read_registry_at(path: &Path) -> Result<Vec<InstalledGame>, String> {
     read_json_or_default(path)
 }
 
 fn write_registry_at(path: &Path, registry: &[InstalledGame]) -> Result<(), String> {
     write_json_atomic(path, &registry)
+        .map_err(|error| format!("could not update the installation registry: {error}"))
+}
+
+fn write_pending_uninstalls_at(path: &Path, pending: &[PendingUninstall]) -> Result<(), String> {
+    write_json_atomic(path, &pending)
+        .map_err(|error| format!("could not update local uninstall state: {error}"))
+}
+
+#[cfg(windows)]
+fn paths_match(left: &Path, right: &Path) -> bool {
+    left.to_string_lossy()
+        .eq_ignore_ascii_case(&right.to_string_lossy())
+}
+
+#[cfg(not(windows))]
+fn paths_match(left: &Path, right: &Path) -> bool {
+    left == right
+}
+
+#[cfg(windows)]
+fn component_matches(left: &std::ffi::OsStr, right: &str) -> bool {
+    left.to_string_lossy().eq_ignore_ascii_case(right)
+}
+
+#[cfg(not(windows))]
+fn component_matches(left: &std::ffi::OsStr, right: &str) -> bool {
+    left == std::ffi::OsStr::new(right)
+}
+
+fn resolve_managed_installation_path(
+    recorded_path: &Path,
+    game_slug: &str,
+    allowed_roots: &[PathBuf],
+) -> Result<PathBuf, String> {
+    validate_game_slug(game_slug)?;
+    if !recorded_path.is_absolute()
+        || recorded_path
+            .file_name()
+            .is_none_or(|name| !component_matches(name, game_slug))
+    {
+        return Err(format!(
+            "unsafe uninstall path: {}",
+            recorded_path.display()
+        ));
+    }
+    let recorded_parent = recorded_path
+        .parent()
+        .ok_or_else(|| format!("unsafe uninstall path: {}", recorded_path.display()))?;
+    let canonical_parent = fs::canonicalize(recorded_parent).map_err(|error| {
+        format!(
+            "unsafe uninstall path: could not validate {}: {error}",
+            recorded_path.display()
+        )
+    })?;
+    for root in allowed_roots {
+        let Ok(canonical_root) = fs::canonicalize(root) else {
+            continue;
+        };
+        if !paths_match(&canonical_parent, &canonical_root) {
+            continue;
+        }
+        if recorded_path.exists() {
+            let metadata = fs::symlink_metadata(recorded_path).map_err(|error| {
+                format!(
+                    "unsafe uninstall path: could not inspect {}: {error}",
+                    recorded_path.display()
+                )
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(format!(
+                    "unsafe uninstall path: {} is not a managed game directory",
+                    recorded_path.display()
+                ));
+            }
+            let canonical_target = fs::canonicalize(recorded_path).map_err(|error| {
+                format!(
+                    "unsafe uninstall path: could not validate {}: {error}",
+                    recorded_path.display()
+                )
+            })?;
+            let target_parent = canonical_target
+                .parent()
+                .ok_or_else(|| format!("unsafe uninstall path: {}", recorded_path.display()))?;
+            if !paths_match(target_parent, &canonical_root)
+                || canonical_target
+                    .file_name()
+                    .is_none_or(|name| !component_matches(name, game_slug))
+            {
+                return Err(format!(
+                    "unsafe uninstall path: {} leaves the managed installation root",
+                    recorded_path.display()
+                ));
+            }
+        }
+        return Ok(recorded_path.to_path_buf());
+    }
+    Err(format!(
+        "unsafe uninstall path: {} is outside the configured Manifold installation roots",
+        recorded_path.display()
+    ))
+}
+
+fn remove_uninstall_files(
+    installation: &Path,
+    game_slug: &str,
+    artifact_id: &str,
+    allowed_roots: &[PathBuf],
+    downloads_root: &Path,
+) -> Result<(), String> {
+    let installation = resolve_managed_installation_path(installation, game_slug, allowed_roots)?;
+    if installation.exists() {
+        fs::remove_dir_all(&installation).map_err(|error| {
+            format!(
+                "could not remove the game files at {}: {error}",
+                installation.display()
+            )
+        })?;
+    }
+    let root = installation
+        .parent()
+        .ok_or_else(|| format!("unsafe uninstall path: {}", installation.display()))?;
+    for transient in [
+        root.join(format!(".{game_slug}.staging")),
+        root.join(format!(".{game_slug}.backup")),
+    ] {
+        if transient.exists() {
+            fs::remove_dir_all(&transient).map_err(|error| {
+                format!(
+                    "could not remove temporary game files at {}: {error}",
+                    transient.display()
+                )
+            })?;
+        }
+    }
+    if !artifact_id.is_empty()
+        && artifact_id.len() <= 120
+        && artifact_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        let partial = downloads_root.join(format!("{artifact_id}.part"));
+        if partial.exists() {
+            fs::remove_file(&partial).map_err(|error| {
+                format!(
+                    "could not remove the partial game download at {}: {error}",
+                    partial.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn recover_pending_uninstalls_at(
+    registry_file: &Path,
+    pending_file: &Path,
+    allowed_roots: &[PathBuf],
+    downloads_root: &Path,
+) -> Result<(), String> {
+    let pending: Vec<PendingUninstall> = read_json_or_default(pending_file)?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let mut registry = read_registry_at(registry_file)?;
+    let mut remaining = Vec::new();
+    for operation in pending {
+        let removal = remove_uninstall_files(
+            Path::new(&operation.install_directory),
+            &operation.game_slug,
+            &operation.artifact_id,
+            allowed_roots,
+            downloads_root,
+        );
+        if removal.is_err() {
+            remaining.push(operation);
+            continue;
+        }
+        if registry
+            .iter()
+            .any(|game| game.game_slug == operation.game_slug)
+        {
+            registry.retain(|game| game.game_slug != operation.game_slug);
+            write_registry_at(registry_file, &registry)?;
+        }
+    }
+    write_pending_uninstalls_at(pending_file, &remaining)
+}
+
+fn uninstall_game_at(
+    registry_file: &Path,
+    pending_file: &Path,
+    allowed_roots: &[PathBuf],
+    downloads_root: &Path,
+    game_slug: &str,
+) -> Result<UninstallResult, String> {
+    let previous_pending: Vec<PendingUninstall> = read_json_or_default(pending_file)?;
+    let was_pending = previous_pending
+        .iter()
+        .any(|operation| operation.game_slug == game_slug);
+    recover_pending_uninstalls_at(registry_file, pending_file, allowed_roots, downloads_root)?;
+    let mut registry = read_registry_at(registry_file)?;
+    let Some(game) = registry
+        .iter()
+        .find(|game| game.game_slug == game_slug)
+        .cloned()
+    else {
+        return if was_pending {
+            Ok(UninstallResult {
+                game_slug: game_slug.to_string(),
+            })
+        } else {
+            Err(NOT_INSTALLED.into())
+        };
+    };
+    resolve_managed_installation_path(
+        Path::new(&game.install_directory),
+        game_slug,
+        allowed_roots,
+    )?;
+    let mut pending: Vec<PendingUninstall> = read_json_or_default(pending_file)?;
+    pending.retain(|operation| operation.game_slug != game_slug);
+    pending.push(PendingUninstall {
+        game_slug: game_slug.to_string(),
+        install_directory: game.install_directory.clone(),
+        artifact_id: game.artifact_id.clone(),
+    });
+    write_pending_uninstalls_at(pending_file, &pending)?;
+    remove_uninstall_files(
+        Path::new(&game.install_directory),
+        game_slug,
+        &game.artifact_id,
+        allowed_roots,
+        downloads_root,
+    )?;
+    registry.retain(|installed| installed.game_slug != game_slug);
+    write_registry_at(registry_file, &registry)?;
+    pending.retain(|operation| operation.game_slug != game_slug);
+    write_pending_uninstalls_at(pending_file, &pending)?;
+    Ok(UninstallResult {
+        game_slug: game_slug.to_string(),
+    })
 }
 
 fn installation_status(game: &InstalledGame) -> InstallationStatus {
@@ -548,6 +950,16 @@ fn configured_install_root(app: &AppHandle) -> Result<PathBuf, String> {
         }
         None => default_install_root(app),
     }
+}
+
+fn allowed_install_roots(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let default = default_install_root(app)?;
+    let configured = configured_install_root(app)?;
+    let mut roots = vec![configured];
+    if !roots.iter().any(|root| paths_match(root, &default)) {
+        roots.push(default);
+    }
+    Ok(roots)
 }
 
 fn emit_progress(
@@ -1193,11 +1605,21 @@ pub fn cancel_installation(
 
 #[tauri::command]
 pub fn list_installations(app: AppHandle) -> Result<Vec<InstalledGame>, String> {
+    recover_pending_uninstalls_at(
+        &registry_path(&app)?,
+        &pending_uninstalls_path(&app)?,
+        &allowed_install_roots(&app)?,
+        &app_data_directory(&app)?.join("downloads"),
+    )?;
     reconcile_installations_at(&registry_path(&app)?)
 }
 
 #[tauri::command]
-pub fn launch_game(app: AppHandle, game_slug: String) -> Result<(), String> {
+pub fn launch_game(
+    app: AppHandle,
+    manager: tauri::State<'_, InstallationManager>,
+    game_slug: String,
+) -> Result<(), String> {
     validate_game_slug(&game_slug)?;
     let registry = reconcile_installations_at(&registry_path(&app)?)?;
     let game = registry
@@ -1209,10 +1631,49 @@ pub fn launch_game(app: AppHandle, game_slug: String) -> Result<(), String> {
     command
         .args(launch.arguments)
         .envs(launch.environment)
-        .current_dir(launch.working_directory)
-        .spawn()
-        .map_err(|error| format!("could not launch game: {error}"))?;
-    Ok(())
+        .current_dir(launch.working_directory);
+    manager.launch(&game_slug, &mut command)
+}
+
+#[tauri::command]
+pub async fn uninstall_game(
+    app: AppHandle,
+    manager: tauri::State<'_, InstallationManager>,
+    game_slug: String,
+) -> Result<UninstallResult, UninstallCommandError> {
+    validate_game_slug(&game_slug).map_err(UninstallCommandError::from_message)?;
+    let registry = registry_path(&app).map_err(UninstallCommandError::from_message)?;
+    let pending = pending_uninstalls_path(&app).map_err(UninstallCommandError::from_message)?;
+    let roots = allowed_install_roots(&app).map_err(UninstallCommandError::from_message)?;
+    let downloads = app_data_directory(&app)
+        .map_err(UninstallCommandError::from_message)?
+        .join("downloads");
+    manager
+        .begin_uninstall(&game_slug)
+        .map_err(UninstallCommandError::from_message)?;
+    append_uninstall_diagnostic(&app, &game_slug, "UNINSTALL_STARTED", None);
+    let slug_for_task = game_slug.clone();
+    let task_result = tokio::task::spawn_blocking(move || {
+        uninstall_game_at(&registry, &pending, &roots, &downloads, &slug_for_task)
+    })
+    .await;
+    manager.finish_uninstall(&game_slug);
+    let result = task_result.map_err(|error| {
+        UninstallCommandError::from_message(format!("uninstall task failed: {error}"))
+    })?;
+    match &result {
+        Ok(_) => append_uninstall_diagnostic(&app, &game_slug, "UNINSTALLED", None),
+        Err(error) => {
+            let command_error = UninstallCommandError::from_message(error.clone());
+            append_uninstall_diagnostic(
+                &app,
+                &game_slug,
+                "UNINSTALL_FAILED",
+                Some(&command_error.code),
+            );
+        }
+    }
+    result.map_err(UninstallCommandError::from_message)
 }
 
 #[tauri::command]
@@ -1799,6 +2260,259 @@ mod tests {
         assert_eq!(stored[0].game_slug, "test-game");
         assert!(!install_root.join(".test-game.staging").exists());
         assert!(!install_root.join(".test-game.backup").exists());
+    }
+
+    #[test]
+    fn uninstall_removes_only_the_managed_game_and_its_local_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let pending = directory.path().join("pending-uninstalls.json");
+        let downloads = directory.path().join("downloads");
+        let plan = test_plan("game.exe", 4);
+        install_archive_at(&install_root, &registry, "Test Game", &plan, &archive_path).unwrap();
+        fs::create_dir_all(install_root.join("another-game")).unwrap();
+        fs::write(install_root.join("another-game/keep.txt"), b"keep").unwrap();
+        fs::create_dir_all(&downloads).unwrap();
+        fs::write(downloads.join("artifact-1.part"), b"partial").unwrap();
+
+        let result = uninstall_game_at(
+            &registry,
+            &pending,
+            std::slice::from_ref(&install_root),
+            &downloads,
+            "test-game",
+        )
+        .unwrap();
+
+        assert_eq!(result.game_slug, "test-game");
+        assert!(!install_root.join("test-game").exists());
+        assert!(install_root.join("another-game/keep.txt").is_file());
+        assert!(!downloads.join("artifact-1.part").exists());
+        assert!(read_registry_at(&registry).unwrap().is_empty());
+        let pending_operations: Vec<PendingUninstall> = read_json_or_default(&pending).unwrap();
+        assert!(pending_operations.is_empty());
+    }
+
+    #[test]
+    fn uninstall_rejects_a_registry_path_outside_managed_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let allowed_root = directory.path().join("managed-games");
+        let outside_root = directory.path().join("outside");
+        let registry = directory.path().join("installations.json");
+        let pending = directory.path().join("pending-uninstalls.json");
+        let downloads = directory.path().join("downloads");
+        fs::create_dir_all(&allowed_root).unwrap();
+        install_archive_at(
+            &outside_root,
+            &registry,
+            "Test Game",
+            &test_plan("game.exe", 4),
+            &archive_path,
+        )
+        .unwrap();
+
+        let error = uninstall_game_at(
+            &registry,
+            &pending,
+            &[allowed_root],
+            &downloads,
+            "test-game",
+        )
+        .unwrap_err();
+
+        assert!(error.starts_with("unsafe uninstall path"));
+        assert!(outside_root.join("test-game/game.exe").is_file());
+        assert_eq!(read_registry_at(&registry).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn uninstalling_a_missing_game_directory_clears_the_stale_registry_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let pending = directory.path().join("pending-uninstalls.json");
+        install_archive_at(
+            &install_root,
+            &registry,
+            "Test Game",
+            &test_plan("game.exe", 4),
+            &archive_path,
+        )
+        .unwrap();
+        fs::remove_dir_all(install_root.join("test-game")).unwrap();
+
+        uninstall_game_at(
+            &registry,
+            &pending,
+            std::slice::from_ref(&install_root),
+            &directory.path().join("downloads"),
+            "test-game",
+        )
+        .unwrap();
+
+        assert!(read_registry_at(&registry).unwrap().is_empty());
+    }
+
+    #[test]
+    fn startup_recovery_finishes_an_uninstall_interrupted_before_registry_update() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let pending = directory.path().join("pending-uninstalls.json");
+        let downloads = directory.path().join("downloads");
+        let installed = install_archive_at(
+            &install_root,
+            &registry,
+            "Test Game",
+            &test_plan("game.exe", 4),
+            &archive_path,
+        )
+        .unwrap();
+        write_pending_uninstalls_at(
+            &pending,
+            &[PendingUninstall {
+                game_slug: installed.game_slug.clone(),
+                install_directory: installed.install_directory.clone(),
+                artifact_id: installed.artifact_id.clone(),
+            }],
+        )
+        .unwrap();
+        fs::remove_dir_all(install_root.join("test-game")).unwrap();
+
+        recover_pending_uninstalls_at(
+            &registry,
+            &pending,
+            std::slice::from_ref(&install_root),
+            &downloads,
+        )
+        .unwrap();
+
+        assert!(read_registry_at(&registry).unwrap().is_empty());
+        let pending_operations: Vec<PendingUninstall> = read_json_or_default(&pending).unwrap();
+        assert!(pending_operations.is_empty());
+    }
+
+    #[test]
+    fn retrying_a_pending_uninstall_is_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("game.zip");
+        write_zip(&archive_path, &[("game.exe", b"play")]);
+        let install_root = directory.path().join("games");
+        let registry = directory.path().join("installations.json");
+        let pending = directory.path().join("pending-uninstalls.json");
+        let downloads = directory.path().join("downloads");
+        let installed = install_archive_at(
+            &install_root,
+            &registry,
+            "Test Game",
+            &test_plan("game.exe", 4),
+            &archive_path,
+        )
+        .unwrap();
+        write_pending_uninstalls_at(
+            &pending,
+            &[PendingUninstall {
+                game_slug: installed.game_slug.clone(),
+                install_directory: installed.install_directory.clone(),
+                artifact_id: installed.artifact_id.clone(),
+            }],
+        )
+        .unwrap();
+
+        let result = uninstall_game_at(
+            &registry,
+            &pending,
+            std::slice::from_ref(&install_root),
+            &downloads,
+            "test-game",
+        )
+        .unwrap();
+
+        assert_eq!(result.game_slug, "test-game");
+        assert!(read_registry_at(&registry).unwrap().is_empty());
+    }
+
+    #[test]
+    fn manager_blocks_uninstall_during_an_active_installation() {
+        let manager = InstallationManager::new();
+        let _cancellation = manager.begin("test-game").unwrap();
+
+        assert_eq!(
+            manager.begin_uninstall("test-game").unwrap_err(),
+            ACTIVE_INSTALLATION
+        );
+        manager.finish("test-game");
+        assert!(manager.begin_uninstall("test-game").is_ok());
+        manager.finish_uninstall("test-game");
+    }
+
+    #[test]
+    fn manager_blocks_uninstall_while_a_launched_game_is_running() {
+        let manager = InstallationManager::new();
+        #[cfg(windows)]
+        let child = Command::new("cmd")
+            .args(["/C", "ping 127.0.0.1 -n 6 > NUL"])
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let child = Command::new("sh").args(["-c", "sleep 5"]).spawn().unwrap();
+        manager
+            .state
+            .lock()
+            .unwrap()
+            .processes
+            .insert("test-game".into(), child);
+
+        assert_eq!(
+            manager.begin_uninstall("test-game").unwrap_err(),
+            GAME_RUNNING
+        );
+
+        let mut child = manager
+            .state
+            .lock()
+            .unwrap()
+            .processes
+            .remove("test-game")
+            .unwrap();
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn uninstall_rejects_a_symlinked_game_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let install_root = directory.path().join("games");
+        let outside = directory.path().join("outside-game");
+        fs::create_dir_all(&install_root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("game.exe"), b"keep").unwrap();
+        let linked = install_root.join("test-game");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_dir(&outside, &linked).is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &linked).unwrap();
+
+        let error = resolve_managed_installation_path(
+            &linked,
+            "test-game",
+            std::slice::from_ref(&install_root),
+        )
+        .unwrap_err();
+
+        assert!(error.starts_with("unsafe uninstall path"));
+        assert!(outside.join("game.exe").is_file());
     }
 
     #[test]

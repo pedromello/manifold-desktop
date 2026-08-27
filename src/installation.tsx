@@ -67,6 +67,42 @@ export type InstallationPreferences = {
   defaultInstallDirectory: string;
 };
 
+export type UninstallErrorCode =
+  | 'GAME_RUNNING'
+  | 'INSTALLATION_ACTIVE'
+  | 'NOT_INSTALLED'
+  | 'UNSAFE_INSTALLATION_PATH'
+  | 'LOCAL_STATE_ERROR'
+  | 'FILESYSTEM_ERROR'
+  | 'UNINSTALL_FAILED';
+
+export type UninstallFailure = {
+  code: UninstallErrorCode;
+  message: string;
+  retryable: boolean;
+};
+
+export function normalizeUninstallFailure(reason: unknown): UninstallFailure {
+  if (reason && typeof reason === 'object') {
+    const value = reason as Record<string, unknown>;
+    if (typeof value.code === 'string') {
+      return {
+        code: value.code as UninstallErrorCode,
+        message:
+          typeof value.message === 'string'
+            ? value.message
+            : 'uninstall failed',
+        retryable: value.retryable !== false,
+      };
+    }
+  }
+  return {
+    code: 'UNINSTALL_FAILED',
+    message: typeof reason === 'string' ? reason : 'uninstall failed',
+    retryable: true,
+  };
+}
+
 type InstallationContextValue = {
   progress: Record<string, InstallationProgress>;
   installed: Record<string, InstalledGame>;
@@ -74,6 +110,7 @@ type InstallationContextValue = {
   install: (gameSlug: string, title: string) => Promise<void>;
   cancel: (gameSlug: string) => Promise<void>;
   launch: (gameSlug: string) => Promise<void>;
+  uninstall: (gameSlug: string) => Promise<void>;
   refresh: () => Promise<void>;
   checkForUpdates: (gameSlugs: string[]) => Promise<void>;
 };
@@ -216,6 +253,26 @@ export function InstallationProvider({
     await invoke('launch_game', { gameSlug });
   }, []);
 
+  const uninstall = useCallback(async (gameSlug: string) => {
+    await invoke('uninstall_game', { gameSlug });
+    delete downloadMetrics.current[gameSlug];
+    setInstalled((current) => {
+      const next = { ...current };
+      delete next[gameSlug];
+      return next;
+    });
+    setAvailableUpdates((current) => {
+      const next = { ...current };
+      delete next[gameSlug];
+      return next;
+    });
+    setProgress((current) => {
+      const next = { ...current };
+      delete next[gameSlug];
+      return next;
+    });
+  }, []);
+
   const checkForUpdates = useCallback(
     async (gameSlugs: string[]) => {
       const updates: Record<string, string> = {};
@@ -242,6 +299,7 @@ export function InstallationProvider({
       install,
       cancel,
       launch,
+      uninstall,
       refresh,
       checkForUpdates,
     }),
@@ -254,6 +312,7 @@ export function InstallationProvider({
       launch,
       progress,
       refresh,
+      uninstall,
     ],
   );
   return (
