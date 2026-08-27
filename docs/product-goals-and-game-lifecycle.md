@@ -67,6 +67,8 @@ Process launching must be implemented as a narrow native command. The WebView mu
 
 The client should track the lifecycle of the process it launches so it can distinguish at least `ready`, `launching`, `running`, and `exited` states and can report launch failures in a recoverable way.
 
+The first Windows implementation tracks the direct entrypoint process launched during the current native app session. This is enough to prevent duplicate launches, keep a reloaded WebView synchronized, and block file mutations while the process is alive. It does not yet rediscover a game launched outside Manifold, survive a full desktop-app restart, or follow a launcher that exits after handing off to another process. Those cases require verified persisted process identity or the server-backed lease model below; PID alone must never be trusted because operating systems reuse it.
+
 ## Concurrent-play entitlement rule
 
 Manifold must prevent the same account entitlement for the same game from being actively played on multiple computers at the same time.

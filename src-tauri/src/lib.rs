@@ -836,6 +836,8 @@ pub fn run() {
             installer::cancel_installation,
             installer::list_installations,
             installer::launch_game,
+            installer::list_running_games,
+            installer::uninstall_game,
             installer::get_installation_preferences,
             installer::set_installation_preferences,
             installer::get_installation_diagnostics,

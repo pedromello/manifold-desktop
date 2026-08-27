@@ -823,6 +823,91 @@ dt {
   cursor: progress;
   opacity: 0.62;
 }
+.uninstall-action {
+  width: fit-content;
+  margin: -7px auto 0;
+  padding: 4px 8px;
+  color: #9f97a8;
+  border: 0;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 700;
+}
+.uninstall-action:hover:not(:disabled) {
+  color: #f0b1b1;
+}
+.uninstall-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.library-notice {
+  margin: 0 0 18px;
+  padding: 11px 14px;
+  color: #c7f9da;
+  border: 1px solid rgba(118, 245, 165, 0.2);
+  border-radius: 10px;
+  background: rgba(55, 139, 85, 0.13);
+  font-size: 12px;
+}
+.dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(8, 6, 12, 0.76);
+}
+.confirmation-dialog {
+  width: min(440px, 100%);
+  padding: 24px;
+  color: #f8f5fb;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+  border-radius: 15px;
+  background: #1b1522;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.46);
+}
+.confirmation-dialog h2 {
+  margin: 8px 0 10px;
+  font-size: 23px;
+  letter-spacing: -0.03em;
+}
+.confirmation-dialog > p {
+  margin: 0;
+  color: #b4acbd;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.confirmation-dialog .confirmation-note {
+  margin-top: 12px;
+  color: #8f8799;
+  font-size: 11px;
+}
+.confirmation-dialog .install-error {
+  margin-top: 14px;
+  color: #ffaaaa;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 22px;
+}
+.danger-action {
+  padding: 9px 13px;
+  color: #fff;
+  border: 1px solid rgba(255, 129, 129, 0.32);
+  border-radius: 9px;
+  background: #a73943;
+  font-weight: 800;
+}
+.danger-action:hover:not(:disabled) {
+  background: #bc414c;
+}
+.danger-action:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
 .install-progress {
   height: 5px;
   overflow: hidden;

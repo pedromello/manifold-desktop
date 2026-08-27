@@ -115,11 +115,35 @@ const resources = {
         install: 'Instalar',
         installing: 'Instalando…',
         launching: 'Iniciando…',
+        playing: 'Jogando',
         play: 'Jogar',
         update: 'Atualizar',
         repair: 'Reparar instalação',
         repairNeeded: 'Reparo necessário',
         retryInstall: 'Tentar instalar novamente',
+        uninstall: 'Desinstalar',
+        uninstalling: 'Desinstalando…',
+        uninstallEyebrow: 'REMOVER DESTE COMPUTADOR',
+        uninstallTitle: 'Desinstalar {{title}}?',
+        uninstallDescription:
+          'Os arquivos baixados deste jogo serão apagados deste computador. Você poderá instalá-lo novamente pela sua biblioteca.',
+        uninstallKeeps:
+          'Sua compra, seu acesso ao jogo e dados salvos fora da pasta de instalação não serão removidos.',
+        confirmUninstall: 'Desinstalar jogo',
+        uninstallSuccess: '{{title}} foi desinstalado.',
+        uninstallGameRunning:
+          'Feche o jogo antes de desinstalá-lo e tente novamente.',
+        uninstallInstallationActive:
+          'Aguarde a instalação ou atualização terminar antes de desinstalar.',
+        uninstallUnsafePath:
+          'A pasta deste jogo não pôde ser validada com segurança. Nenhum arquivo foi apagado.',
+        uninstallLocalStateError:
+          'Não foi possível atualizar o estado local do jogo. Tente novamente.',
+        uninstallFilesystemError:
+          'Não foi possível apagar todos os arquivos. Feche programas que possam estar usando o jogo e tente novamente.',
+        uninstallNotInstalled: 'Este jogo já não está instalado.',
+        uninstallFailed:
+          'Não foi possível desinstalar o jogo. Tente novamente.',
         unavailableBuild: 'Versão para Windows ainda indisponível',
         progressLabel: '{{title}}: {{phase}}',
       },
@@ -322,11 +346,34 @@ const resources = {
         install: 'Install',
         installing: 'Installing…',
         launching: 'Launching…',
+        playing: 'Playing',
         play: 'Play',
         update: 'Update',
         repair: 'Repair installation',
         repairNeeded: 'Repair needed',
         retryInstall: 'Retry installation',
+        uninstall: 'Uninstall',
+        uninstalling: 'Uninstalling…',
+        uninstallEyebrow: 'REMOVE FROM THIS COMPUTER',
+        uninstallTitle: 'Uninstall {{title}}?',
+        uninstallDescription:
+          'The downloaded game files will be removed from this computer. You can install it again from your library.',
+        uninstallKeeps:
+          'Your purchase, game access, and saves stored outside the installation folder will not be removed.',
+        confirmUninstall: 'Uninstall game',
+        uninstallSuccess: '{{title}} was uninstalled.',
+        uninstallGameRunning:
+          'Close the game before uninstalling it, then try again.',
+        uninstallInstallationActive:
+          'Wait for the install or update to finish before uninstalling.',
+        uninstallUnsafePath:
+          'This game folder could not be verified safely. No files were removed.',
+        uninstallLocalStateError:
+          'The local game state could not be updated. Try again.',
+        uninstallFilesystemError:
+          'Some files could not be removed. Close any programs using the game, then try again.',
+        uninstallNotInstalled: 'This game is no longer installed.',
+        uninstallFailed: 'The game could not be uninstalled. Try again.',
         unavailableBuild: 'Windows build not available yet',
         progressLabel: '{{title}}: {{phase}}',
       },
