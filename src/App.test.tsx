@@ -50,6 +50,9 @@ it('renders primary desktop navigation', () => {
   );
   expect(screen.getByRole('link', { name: 'Store' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Downloads' })).toBeInTheDocument();
+  expect(
+    screen.queryByRole('link', { name: 'Studio' }),
+  ).not.toBeInTheDocument();
 });
 
 it('renders games returned by the native catalog command', async () => {
@@ -65,4 +68,41 @@ it('renders games returned by the native catalog command', async () => {
   expect(invoke).toHaveBeenCalledWith('list_store_games', {
     query: null,
   });
+});
+
+it('reveals Studio only after an authenticated publisher has a studio', async () => {
+  vi.mocked(invoke).mockImplementation((command) => {
+    if (command === 'current_user') {
+      return Promise.resolve({
+        id: 'user-1',
+        username: 'publisher',
+        email: 'publisher@example.com',
+      });
+    }
+    if (command === 'list_publisher_studios') {
+      return Promise.resolve([
+        {
+          id: 'studio-1',
+          slug: 'studio',
+          name: 'Studio',
+          description: null,
+          logoUrl: null,
+          isPublisher: true,
+          ownerId: 'user-1',
+        },
+      ]);
+    }
+    if (command === 'list_store_games') return Promise.resolve(catalog);
+    return Promise.resolve({});
+  });
+
+  render(
+    <MemoryRouter>
+      <App />
+    </MemoryRouter>,
+  );
+
+  expect(
+    await screen.findByRole('link', { name: 'Studio' }),
+  ).toBeInTheDocument();
 });
