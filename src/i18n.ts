@@ -102,7 +102,7 @@ const resources = {
       },
       publisher: {
         eyebrow: 'NOVA VERSÃO',
-        title: 'Publicar versão.',
+        title: 'Publicar versão',
         intro:
           'Adicione o arquivo de {{game}} e revise como o jogo será aberto.',
         loading: 'Preparando a publicação…',
@@ -133,6 +133,7 @@ const resources = {
         fileSelected: 'Arquivo selecionado',
         chooseFile: 'Escolher arquivo',
         changeFile: 'Trocar arquivo',
+        back: 'Voltar',
         analyze: 'Analisar arquivo',
         preflightTitle: 'Analisando arquivo',
         preflightHelp:
@@ -449,7 +450,7 @@ const resources = {
       },
       publisher: {
         eyebrow: 'NEW VERSION',
-        title: 'Publish version.',
+        title: 'Publish version',
         intro: 'Add the {{game}} file and review how the game will start.',
         loading: 'Preparing to publish…',
         loadError: 'Couldn’t open publication.',
@@ -479,6 +480,7 @@ const resources = {
         fileSelected: 'File selected',
         chooseFile: 'Choose file',
         changeFile: 'Change file',
+        back: 'Back',
         analyze: 'Analyze file',
         preflightTitle: 'Analyzing file',
         preflightHelp:

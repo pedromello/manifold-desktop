@@ -99,6 +99,12 @@ export interface PublisherAdapter {
     version: string,
     releaseNotes: string | null,
   ): Promise<PublisherRelease>;
+  updateDraft(
+    gameSlug: string,
+    releaseId: string,
+    version: string,
+    releaseNotes: string | null,
+  ): Promise<PublisherRelease>;
   selectArchive(): Promise<string | null>;
   inspectArchive(archivePath: string): Promise<ArchiveInspection>;
   publish(
@@ -120,6 +126,14 @@ export const nativePublisherAdapter: PublisherAdapter = {
   createDraft(gameSlug, version, releaseNotes) {
     return invoke<PublisherRelease>('create_release_draft', {
       gameSlug,
+      version,
+      releaseNotes,
+    });
+  },
+  updateDraft(gameSlug, releaseId, version, releaseNotes) {
+    return invoke<PublisherRelease>('update_release_draft', {
+      gameSlug,
+      releaseId,
       version,
       releaseNotes,
     });
@@ -222,6 +236,20 @@ export const fixturePublisherAdapter: PublisherAdapter = {
       updatedAt: now,
     };
   },
+  async updateDraft(_gameSlug, releaseId, version, releaseNotes) {
+    const now = new Date().toISOString();
+    return {
+      id: releaseId,
+      gameId: fixtureGame.id,
+      version,
+      releaseNumber: 1,
+      status: 'DRAFT',
+      releaseNotes,
+      publishedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+  },
   async selectArchive() {
     return "C:\\Fixture\\Peggy's Post Windows.zip";
   },
@@ -297,7 +325,13 @@ export type StoredPublisherRelease = {
   manifest: PublishManifest | null;
   uploadStarted?: boolean;
   phase:
-    'file' | 'preflight' | 'manifest' | 'uploading' | 'verifying' | 'success';
+    | 'details'
+    | 'file'
+    | 'preflight'
+    | 'manifest'
+    | 'uploading'
+    | 'verifying'
+    | 'success';
   updatedAt: string;
 };
 

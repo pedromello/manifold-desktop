@@ -837,6 +837,7 @@ pub fn run() {
             publisher::list_publisher_studios,
             publisher::list_studio_games,
             publisher::create_release_draft,
+            publisher::update_release_draft,
             publisher::inspect_publish_archive,
             publisher::publish_release,
             publisher::cancel_publish_upload,

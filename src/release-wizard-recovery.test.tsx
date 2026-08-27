@@ -77,6 +77,7 @@ function adapter(): PublisherAdapter {
     listStudios: vi.fn().mockResolvedValue([studio]),
     listGames: vi.fn().mockResolvedValue([game]),
     createDraft: vi.fn(),
+    updateDraft: vi.fn(),
     selectArchive: vi.fn(),
     inspectArchive: vi.fn(),
     publish: vi.fn(),
@@ -137,7 +138,7 @@ it('locks the reviewed artifact and retries an interrupted upload identically', 
 
   const retry = await screen.findByRole('button', { name: 'Try again' });
   expect(screen.getByRole('combobox')).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Change file' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
   fireEvent.click(retry);
 
   expect(

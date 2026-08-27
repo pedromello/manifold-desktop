@@ -143,6 +143,22 @@ async fn api_post<B: Serialize, T: DeserializeOwned>(
     publisher_api_json(response).await
 }
 
+async fn api_patch<B: Serialize, T: DeserializeOwned>(
+    client: &Client,
+    path: &str,
+    body: &B,
+) -> Result<T, PublisherError> {
+    let url = publisher_api_url(path).map_err(PublisherError::unavailable)?;
+    let response = client
+        .patch(url)
+        .header(ACCEPT, "application/json")
+        .json(body)
+        .send()
+        .await
+        .map_err(|_| PublisherError::unavailable("could not reach the Manifold API"))?;
+    publisher_api_json(response).await
+}
+
 async fn api_post_empty<T: DeserializeOwned>(
     client: &Client,
     path: &str,
@@ -305,6 +321,12 @@ struct CreateReleaseRequest<'a> {
     release_notes: Option<&'a str>,
 }
 
+#[derive(Debug, Serialize)]
+struct UpdateReleaseRequest<'a> {
+    version: &'a str,
+    release_notes: Option<&'a str>,
+}
+
 fn validate_slug(value: &str, kind: &str) -> Result<(), PublisherError> {
     if value.is_empty()
         || value.len() > 255
@@ -368,6 +390,49 @@ pub(crate) async fn create_release_draft(
         &CreateReleaseRequest {
             version,
             release_notes,
+        },
+    )
+    .await?;
+    Ok(release.into())
+}
+
+#[tauri::command]
+pub(crate) async fn update_release_draft(
+    state: tauri::State<'_, ApiState>,
+    game_slug: String,
+    release_id: String,
+    version: String,
+    release_notes: Option<String>,
+) -> Result<PublisherRelease, PublisherError> {
+    validate_slug(&game_slug, "game")?;
+    if release_id.is_empty()
+        || release_id.len() > 128
+        || !release_id
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() || character == '-')
+    {
+        return Err(PublisherError::invalid("invalid release id"));
+    }
+    let version = version.trim();
+    if version.is_empty() || version.len() > 50 {
+        return Err(PublisherError::invalid(
+            "release version must contain 1 to 50 characters",
+        ));
+    }
+    let release_notes = release_notes.as_deref().map(str::trim);
+    if release_notes.is_some_and(|notes| notes.len() > 100_000) {
+        return Err(PublisherError::invalid(
+            "release notes must contain at most 100000 characters",
+        ));
+    }
+
+    let client = state.client().map_err(PublisherError::unavailable)?;
+    let release: PublisherReleaseApi = api_patch(
+        &client,
+        &format!("games/{game_slug}/releases/{release_id}"),
+        &UpdateReleaseRequest {
+            version,
+            release_notes: release_notes.filter(|notes| !notes.is_empty()),
         },
     )
     .await?;
@@ -1260,6 +1325,18 @@ mod tests {
             Some("Game")
         );
         assert_eq!(inspection.sha256.len(), 64);
+    }
+
+    #[test]
+    fn draft_update_serializes_cleared_notes_as_null() {
+        let json = serde_json::to_value(UpdateReleaseRequest {
+            version: "1.2.1",
+            release_notes: None,
+        })
+        .unwrap();
+
+        assert_eq!(json["version"], "1.2.1");
+        assert_eq!(json["release_notes"], serde_json::Value::Null);
     }
 
     #[test]

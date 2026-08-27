@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useParams } from 'react-router-dom';
 import {
@@ -22,6 +29,7 @@ type ReleaseWizardRouteProps = {
 };
 
 const phaseStep = {
+  details: 0,
   file: 1,
   preflight: 2,
   manifest: 3,
@@ -213,6 +221,12 @@ function ReleaseArtifactWizard({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [draftVersion, setDraftVersion] = useState(
+    () => findStoredPublisherRelease(releaseId)?.release.version ?? '',
+  );
+  const [draftNotes, setDraftNotes] = useState(
+    () => findStoredPublisherRelease(releaseId)?.release.releaseNotes ?? '',
+  );
   const [uploadedBytes, setUploadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
   const [attempt, setAttempt] = useState(1);
@@ -253,6 +267,34 @@ function ReleaseArtifactWizard({
         <strong>{t('publisher.recoveryMissingHelp')}</strong>
       </div>
     );
+  }
+
+  function returnToDetails() {
+    if (!stored) return;
+    setDraftVersion(stored.release.version);
+    setDraftNotes(stored.release.releaseNotes ?? '');
+    setError(null);
+    update((value) => ({ ...value, phase: 'details' }));
+  }
+
+  async function saveDraft(event: FormEvent) {
+    event.preventDefault();
+    if (!stored) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const release = await adapter.updateDraft(
+        stored.gameSlug,
+        stored.release.id,
+        draftVersion.trim(),
+        draftNotes.trim() || null,
+      );
+      update((value) => ({ ...value, release, phase: 'file' }));
+    } catch (nextError) {
+      setError(errorKey(nextError));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function selectArchive() {
@@ -384,6 +426,55 @@ function ReleaseArtifactWizard({
       <WizardSteps current={currentStep} />
       <div className="publisher-workspace">
         <div className="publisher-main">
+          {stored.phase === 'details' && (
+            <div className="wizard-card">
+              <div className="wizard-heading">
+                <div>
+                  <h2 ref={headingRef} tabIndex={-1}>
+                    {t('publisher.dataTitle')}
+                  </h2>
+                  <p>{t('publisher.dataHelp')}</p>
+                </div>
+              </div>
+              <form
+                className="release-form"
+                onSubmit={(event) => void saveDraft(event)}
+              >
+                <label>
+                  <strong>{t('publisher.version')}</strong>
+                  <span>{t('publisher.versionHelp')}</span>
+                  <input
+                    aria-label={t('publisher.version')}
+                    autoFocus
+                    maxLength={50}
+                    required
+                    value={draftVersion}
+                    onChange={(event) => setDraftVersion(event.target.value)}
+                    placeholder="1.0.0"
+                  />
+                </label>
+                <label>
+                  <strong>{t('publisher.releaseNotes')}</strong>
+                  <span>{t('publisher.releaseNotesHelp')}</span>
+                  <textarea
+                    aria-label={t('publisher.releaseNotes')}
+                    maxLength={100_000}
+                    rows={6}
+                    value={draftNotes}
+                    onChange={(event) => setDraftNotes(event.target.value)}
+                  />
+                </label>
+                <div className="wizard-actions">
+                  <button className="game-action" disabled={busy} type="submit">
+                    {busy
+                      ? t('publisher.creatingDraft')
+                      : t('publisher.createDraft')}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
           {(stored.phase === 'file' || stored.phase === 'preflight') && (
             <div className="wizard-card">
               <div className="wizard-heading">
@@ -422,6 +513,14 @@ function ReleaseArtifactWizard({
                 </div>
               ) : (
                 <div className="wizard-actions">
+                  <button
+                    className="secondary-action"
+                    disabled={busy}
+                    type="button"
+                    onClick={returnToDetails}
+                  >
+                    {t('publisher.back')}
+                  </button>
                   <button
                     className="secondary-action"
                     disabled={busy}
@@ -526,7 +625,7 @@ function ReleaseArtifactWizard({
                     }))
                   }
                 >
-                  {t('publisher.changeFile')}
+                  {t('publisher.back')}
                 </button>
                 <button
                   className="game-action"

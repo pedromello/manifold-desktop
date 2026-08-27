@@ -30,6 +30,7 @@ function adapter(listGames: PublisherAdapter['listGames']): PublisherAdapter {
     listStudios: vi.fn().mockResolvedValue(studios),
     listGames,
     createDraft: vi.fn(),
+    updateDraft: vi.fn(),
     selectArchive: vi.fn(),
     inspectArchive: vi.fn(),
     publish: vi.fn(),

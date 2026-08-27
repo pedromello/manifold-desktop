@@ -39,6 +39,21 @@ function adapter(): PublisherAdapter {
       createdAt: '2026-08-26T12:00:00.000Z',
       updatedAt: '2026-08-26T12:00:00.000Z',
     }),
+    updateDraft: vi
+      .fn()
+      .mockImplementation((_gameSlug, releaseId, version, releaseNotes) =>
+        Promise.resolve({
+          id: releaseId,
+          gameId: game.id,
+          version,
+          releaseNumber: 7,
+          status: 'DRAFT',
+          releaseNotes,
+          publishedAt: null,
+          createdAt: '2026-08-26T12:00:00.000Z',
+          updatedAt: '2026-08-26T12:01:00.000Z',
+        }),
+      ),
     selectArchive: vi.fn().mockResolvedValue(String.raw`C:\Builds\game.zip`),
     inspectArchive: vi.fn().mockResolvedValue({
       archivePath: String.raw`C:\Builds\game.zip`,
@@ -145,6 +160,23 @@ it('runs the readable draft, file, preflight, manifest and publication stages', 
   });
   fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
 
+  expect(
+    await screen.findByRole('heading', { name: 'Game file' }),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Version details' }),
+  ).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Version'), {
+    target: { value: '1.2.1' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+  expect(publishing.updateDraft).toHaveBeenCalledWith(
+    'game',
+    'release-1',
+    '1.2.1',
+    'Fresh build',
+  );
   fireEvent.click(await screen.findByRole('button', { name: 'Choose file' }));
   expect(await screen.findByText('game.zip')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Analyze file' }));
@@ -162,6 +194,16 @@ it('runs the readable draft, file, preflight, manifest and publication stages', 
   fireEvent.click(technicalDetails);
   expect(screen.getByText('File verification')).toBeInTheDocument();
   expect(screen.getByText('Complete')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Game file' }),
+  ).toBeInTheDocument();
+  expect(screen.getByText('game.zip')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Analyze file' }));
+  expect(
+    await screen.findByRole('heading', { name: 'Review version' }),
+  ).toBeInTheDocument();
 
   fireEvent.click(screen.getByRole('button', { name: 'Send version' }));
   expect(
