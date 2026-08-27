@@ -77,11 +77,12 @@ const resources = {
         gameEyebrow: 'PUBLICAÇÃO',
         releasesIntro: 'Versões disponíveis e publicações em andamento.',
         newRelease: 'Publicar versão',
-        localReleasesTitle: 'Sobre este histórico',
-        localReleasesHelp:
-          'Mostrando o histórico salvo neste computador. Algumas versões criadas em outros dispositivos podem não aparecer.',
-        noLocalReleases: 'Nenhuma versão criada neste computador.',
-        noLocalReleasesHelp: 'Publique uma versão para começar.',
+        noReleases: 'Nenhuma versão ainda.',
+        noReleasesHelp: 'Publique uma versão para começar.',
+        paginationLabel: 'Páginas de versões',
+        previousPage: 'Anterior',
+        nextPage: 'Próxima',
+        pageCount: 'Página {{current}} de {{total}}',
         releaseNumber: 'Publicação #{{number}}',
         resume: 'Continuar',
         status: {
@@ -94,7 +95,7 @@ const resources = {
         errors: {
           authentication: 'Sua sessão expirou. Entre novamente para continuar.',
           permission:
-            'Sua conta não tem permissão para ver os jogos deste estúdio.',
+            'Sua conta não tem permissão para acessar esta área do estúdio.',
           unavailable:
             'A publicação está temporariamente indisponível. Tente novamente.',
           notFound: 'O jogo ou estúdio não foi encontrado.',
@@ -427,11 +428,12 @@ const resources = {
         gameEyebrow: 'PUBLISHING',
         releasesIntro: 'Available versions and publishing in progress.',
         newRelease: 'Publish version',
-        localReleasesTitle: 'About this history',
-        localReleasesHelp:
-          'Showing history saved on this computer. Some versions created on other devices may not appear.',
-        noLocalReleases: 'No versions created on this computer.',
-        noLocalReleasesHelp: 'Publish a version to get started.',
+        noReleases: 'No versions yet.',
+        noReleasesHelp: 'Publish a version to get started.',
+        paginationLabel: 'Version pages',
+        previousPage: 'Previous',
+        nextPage: 'Next',
+        pageCount: 'Page {{current}} of {{total}}',
         releaseNumber: 'Publication #{{number}}',
         resume: 'Continue',
         status: {
@@ -443,7 +445,7 @@ const resources = {
         },
         errors: {
           authentication: 'Your session expired. Sign in again to continue.',
-          permission: 'Your account cannot view games for this studio.',
+          permission: 'Your account cannot access this studio area.',
           unavailable: 'Publishing is temporarily unavailable. Try again.',
           notFound: 'The game or studio was not found.',
         },

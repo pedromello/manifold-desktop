@@ -28,6 +28,10 @@ function adapter(): PublisherAdapter {
   return {
     listStudios: vi.fn().mockResolvedValue([studio]),
     listGames: vi.fn().mockResolvedValue([game]),
+    listReleases: vi.fn().mockResolvedValue({
+      releases: [],
+      pagination: { page: 1, limit: 20, total: 0, pages: 0 },
+    }),
     createDraft: vi.fn().mockResolvedValue({
       id: 'release-1',
       gameId: game.id,

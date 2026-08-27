@@ -271,6 +271,19 @@ impl From<GameApi> for PublisherGame {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+struct PublisherArtifactApi {
+    id: String,
+    platform: String,
+    architecture: String,
+    archive_format: String,
+    compressed_size_bytes: Option<String>,
+    installed_size_bytes: Option<String>,
+    sha256: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+}
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 struct PublisherReleaseApi {
     id: String,
     game_id: String,
@@ -282,6 +295,40 @@ struct PublisherReleaseApi {
     published_at: Option<String>,
     created_at: String,
     updated_at: String,
+    #[serde(default)]
+    artifacts: Vec<PublisherArtifactApi>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublisherReleaseArtifact {
+    id: String,
+    platform: String,
+    architecture: String,
+    archive_format: String,
+    compressed_size_bytes: Option<String>,
+    installed_size_bytes: Option<String>,
+    sha256: Option<String>,
+    status: String,
+    created_at: String,
+    updated_at: String,
+}
+
+impl From<PublisherArtifactApi> for PublisherReleaseArtifact {
+    fn from(value: PublisherArtifactApi) -> Self {
+        Self {
+            id: value.id,
+            platform: value.platform,
+            architecture: value.architecture,
+            archive_format: value.archive_format,
+            compressed_size_bytes: value.compressed_size_bytes,
+            installed_size_bytes: value.installed_size_bytes,
+            sha256: value.sha256,
+            status: value.status,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -296,6 +343,7 @@ pub struct PublisherRelease {
     published_at: Option<String>,
     created_at: String,
     updated_at: String,
+    artifacts: Vec<PublisherReleaseArtifact>,
 }
 
 impl From<PublisherReleaseApi> for PublisherRelease {
@@ -310,8 +358,31 @@ impl From<PublisherReleaseApi> for PublisherRelease {
             published_at: value.published_at,
             created_at: value.created_at,
             updated_at: value.updated_at,
+            artifacts: value.artifacts.into_iter().map(Into::into).collect(),
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct PublisherReleaseListApi {
+    releases: Vec<PublisherReleaseApi>,
+    pagination: PublisherPagination,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublisherPagination {
+    page: u32,
+    limit: u32,
+    total: u64,
+    pages: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublisherReleasePage {
+    releases: Vec<PublisherRelease>,
+    pagination: PublisherPagination,
 }
 
 #[derive(Debug, Serialize)]
@@ -359,6 +430,35 @@ pub(crate) async fn list_studio_games(
     Ok(envelope.games.into_iter().map(Into::into).collect())
 }
 
+#[tauri::command]
+pub(crate) async fn list_game_releases(
+    state: tauri::State<'_, ApiState>,
+    game_slug: String,
+    page: u32,
+    limit: u32,
+) -> Result<PublisherReleasePage, PublisherError> {
+    validate_slug(&game_slug, "game")?;
+    if page == 0 || limit == 0 || limit > 100 {
+        return Err(PublisherError::invalid(
+            "release page must be positive and limit must be between 1 and 100",
+        ));
+    }
+    let client = state.client().map_err(PublisherError::unavailable)?;
+    let envelope: PublisherReleaseListApi = api_get(
+        &client,
+        &format!("games/{game_slug}/releases?page={page}&limit={limit}"),
+    )
+    .await?;
+    if envelope.pagination.page != page || envelope.pagination.limit != limit {
+        return Err(PublisherError::unavailable(
+            "Manifold API returned inconsistent release pagination",
+        ));
+    }
+    Ok(PublisherReleasePage {
+        releases: envelope.releases.into_iter().map(Into::into).collect(),
+        pagination: envelope.pagination,
+    })
+}
 #[tauri::command]
 pub(crate) async fn create_release_draft(
     state: tauri::State<'_, ApiState>,
@@ -1327,6 +1427,53 @@ mod tests {
         assert_eq!(inspection.sha256.len(), 64);
     }
 
+    #[test]
+    fn release_list_accepts_the_backend_contract_and_exposes_only_safe_artifact_fields() {
+        let envelope: PublisherReleaseListApi = serde_json::from_value(serde_json::json!({
+            "game": { "id": "game-1", "slug": "game", "title": "Game" },
+            "releases": [{
+                "id": "release-1",
+                "game_id": "game-1",
+                "version": "1.0.0",
+                "release_number": 1,
+                "status": "PUBLISHED",
+                "release_notes": null,
+                "published_at": "2026-08-27T12:00:00.000Z",
+                "created_at": "2026-08-27T11:00:00.000Z",
+                "updated_at": "2026-08-27T12:00:00.000Z",
+                "artifacts": [{
+                    "id": "artifact-1",
+                    "platform": "WINDOWS",
+                    "architecture": "X86_64",
+                    "archive_format": "ZIP",
+                    "compressed_size_bytes": "12",
+                    "installed_size_bytes": "20",
+                    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "manifest": {
+                        "entrypoint": "game.exe",
+                        "environment": { "SECRET": "must-not-leak" }
+                    },
+                    "storage_object_key": "internal/must-not-leak",
+                    "status": "READY",
+                    "created_at": "2026-08-27T11:00:00.000Z",
+                    "updated_at": "2026-08-27T12:00:00.000Z"
+                }]
+            }],
+            "pagination": { "page": 1, "limit": 20, "total": 1, "pages": 1 }
+        }))
+        .unwrap();
+        let page = PublisherReleasePage {
+            releases: envelope.releases.into_iter().map(Into::into).collect(),
+            pagination: envelope.pagination,
+        };
+        let json = serde_json::to_value(page).unwrap();
+
+        assert_eq!(json["releases"][0]["artifacts"][0]["archiveFormat"], "ZIP");
+        assert!(json["releases"][0]["artifacts"][0]
+            .get("manifest")
+            .is_none());
+        assert!(!json.to_string().contains("must-not-leak"));
+    }
     #[test]
     fn draft_update_serializes_cleared_notes_as_null() {
         let json = serde_json::to_value(UpdateReleaseRequest {

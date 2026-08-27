@@ -836,6 +836,7 @@ pub fn run() {
             resolve_install_plan,
             publisher::list_publisher_studios,
             publisher::list_studio_games,
+            publisher::list_game_releases,
             publisher::create_release_draft,
             publisher::update_release_draft,
             publisher::inspect_publish_archive,

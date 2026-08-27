@@ -1,7 +1,7 @@
-# Publisher MVP backend gaps
+# Publisher MVP backend dependencies and gaps
 
-Audited against manifoldpowered.com origin/main at
-323baa386c927ff759a3eecee89d4fcf5e108fc0 (PR #243).
+Audited against manifoldpowered.com PR #244 at
+acefa721b11eeec874a0cfa90d74db018b7bf0cf.
 
 The direct upload path is available and is used by the desktop publisher:
 draft creation, idempotent upload authorization, direct storage PUT, and
@@ -9,57 +9,31 @@ transactional confirmation/publication. The desktop does not send ZIP bytes
 through Next/Vercel and never persists signed URLs, authorization headers, or
 session cookies.
 
-## Missing release listing
+## Release listing and draft updates
 
-The /api/v1/games/:slug/releases route currently exposes only POST. This means
-the desktop cannot list releases created on another device or recover a draft
-after its local recovery record is lost. The MVP therefore labels its release
-list as device-local and persists only release metadata, the local archive
-path, inspection results, and manifest.
+Backend PR #244 adds the authenticated contracts consumed by this desktop PR:
 
-Expected minimum contract:
+    GET /api/v1/games/:slug/releases?page=1&limit=20
+    PATCH /api/v1/games/:slug/releases/:release_id
 
-    GET /api/v1/games/:slug/releases?page=1&limit=50
-    Cookie: session_id=...
+The GET response is ordered by release_number descending and contains a safe
+game projection, releases in every status, allow-listed artifact metadata, and
+pagination. It omits storage object keys, signed URLs, required headers,
+cookies, tokens, and manifest environment values. The desktop uses it as the
+source of truth, supports pagination, and can turn a draft created on another
+device into a local resumable publication without asking for technical IDs.
 
-    {
-      "releases": [
-        {
-          "id": "uuid",
-          "game_id": "uuid",
-          "version": "1.0.0",
-          "release_number": 1,
-          "status": "DRAFT",
-          "release_notes": null,
-          "published_at": null,
-          "created_at": "ISO-8601",
-          "updated_at": "ISO-8601",
-          "artifacts": [
-            {
-              "id": "uuid",
-              "platform": "WINDOWS",
-              "architecture": "X86_64",
-              "archive_format": "ZIP",
-              "status": "PENDING",
-              "compressed_size_bytes": "71059858",
-              "installed_size_bytes": "305505736",
-              "sha256": "lowercase-hex",
-              "manifest": {}
-            }
-          ]
-        }
-      ],
-      "pagination": {
-        "page": 1,
-        "limit": 50,
-        "total": 1,
-        "pages": 1
-      }
-    }
+The PATCH accepts version and/or release_notes only while the release is DRAFT.
+An explicit release_notes null clears notes, while an omitted field preserves
+them. The desktop uses this route when the user goes back from File to Details,
+so it updates the same draft instead of creating an orphan draft.
 
-The response must omit storage object keys, signed URLs, required headers, and
-actor/session data. Authorization should accept the game owner or a studio
-member with release/artifact publishing permission.
+Both routes require an authenticated owner or studio member with the effective
+create:game_release permission for the game. The desktop handles 401, 403, 404,
+loading, error, and empty states, but the backend remains authoritative.
+
+PR #244 must be merged and deployed before shipping this desktop change. It
+contains no additional migration or runtime dependency.
 
 ## Publisher game discovery and effective capabilities
 
@@ -87,19 +61,10 @@ Until this exists, the desktop shows Studio after /studios returns at least
 one item, calls the protected games endpoint, and presents a localized 403
 state. Server-side authorization remains authoritative.
 
-## Failed verification and draft correction
+## Failed verification recovery
 
 An upload declaration is reusable only while its artifact is PENDING.
 Confirmation failures mark the artifact/release FAILED, but there is no public
 remove/replace endpoint. A failed object can therefore leave the target slot
-unavailable for a clean retry.
-
-The backend model has gameRelease.updateDraft, but no API route exposes it. If
-product requirements include changing version or release notes after draft
-creation, add:
-
-    PATCH /api/v1/releases/:release_id
-    { "version"?: "1.0.1", "release_notes"?: "..." }
-
-restricted to DRAFT, plus a safe remove/replace operation for unpublished
-artifacts or identical reauthorization from FAILED.
+unavailable for a clean retry. A safe remove/replace operation for unpublished
+artifacts, or identical reauthorization from FAILED, remains a backend gap.

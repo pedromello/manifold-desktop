@@ -1,12 +1,13 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   isPublisherError,
-  loadStoredPublisherReleases,
+  findStoredPublisherRelease,
   publisherAdapter,
   PublisherAdapter,
   PublisherGame,
+  PublisherRelease,
   PublisherStudio,
   storePublisherRelease,
 } from './publishing';
@@ -23,6 +24,7 @@ function publisherErrorKey(error: unknown) {
     return 'studio.errors.authentication';
   if (error.code === 'FORBIDDEN' || error.code === 'PERMISSION_DENIED')
     return 'studio.errors.permission';
+  if (error.code === 'NOT_FOUND') return 'studio.errors.notFound';
   return 'studio.errors.unavailable';
 }
 
@@ -76,6 +78,73 @@ function useStudioGames(
   };
 }
 
+const RELEASES_PER_PAGE = 20;
+
+function useGameReleases(
+  gameSlug: string | undefined,
+  adapter: PublisherAdapter,
+  onUnauthorized: () => void,
+) {
+  const [releases, setReleases] = useState<PublisherRelease[]>([]);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    limit: RELEASES_PER_PAGE,
+    total: 0,
+    pages: 0,
+  });
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(Boolean(gameSlug));
+  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [requestVersion, setRequestVersion] = useState(0);
+
+  useEffect(() => {
+    setPage(1);
+  }, [gameSlug]);
+
+  useEffect(() => {
+    if (!gameSlug) {
+      setReleases([]);
+      setLoading(false);
+      return;
+    }
+    let active = true;
+    setLoading(true);
+    setErrorKey(null);
+    adapter
+      .listReleases(gameSlug, page, RELEASES_PER_PAGE)
+      .then((value) => {
+        if (!active) return;
+        setReleases(value.releases);
+        setPagination(value.pagination);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        if (
+          isPublisherError(error) &&
+          error.code === 'AUTHENTICATION_REQUIRED'
+        ) {
+          onUnauthorized();
+        }
+        setErrorKey(publisherErrorKey(error));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [adapter, gameSlug, onUnauthorized, page, requestVersion]);
+
+  return {
+    releases,
+    pagination,
+    loading,
+    errorKey,
+    previous: () => setPage((value) => Math.max(1, value - 1)),
+    next: () => setPage((value) => Math.min(pagination.pages || 1, value + 1)),
+    retry: () => setRequestVersion((value) => value + 1),
+  };
+}
 export function StudioPage({
   studios,
   adapter = publisherAdapter,
@@ -198,23 +267,40 @@ export function StudioGamePage({
     adapter,
     onUnauthorized,
   );
+  const {
+    releases,
+    pagination,
+    loading: releasesLoading,
+    errorKey: releasesErrorKey,
+    previous,
+    next,
+    retry: retryReleases,
+  } = useGameReleases(gameSlug, adapter, onUnauthorized);
   const game = games.find((value) => value.slug === gameSlug);
   const studio = studios.find((value) => value.slug === studioSlug);
-  const releases = useMemo(
-    () =>
-      loadStoredPublisherReleases()
-        .filter(
-          (value) =>
-            value.studioSlug === studioSlug && value.gameSlug === gameSlug,
-        )
-        .sort(
-          (left, right) =>
-            right.release.releaseNumber - left.release.releaseNumber,
-        ),
-    [gameSlug, studioSlug],
-  );
 
-  if (loading) {
+  function rememberRelease(release: PublisherRelease) {
+    if (!studioSlug || !gameSlug || !game) return;
+    const existing = findStoredPublisherRelease(release.id);
+    if (existing) {
+      storePublisherRelease({ ...existing, release });
+      return;
+    }
+    storePublisherRelease({
+      studioSlug,
+      gameSlug,
+      gameTitle: game.title,
+      release,
+      archivePath: null,
+      inspection: null,
+      manifest: null,
+      phase: 'file',
+      uploadStarted: false,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  if (loading || releasesLoading) {
     return (
       <section className="studio-page">
         <div className="catalog-state" role="status">
@@ -225,13 +311,22 @@ export function StudioGamePage({
     );
   }
 
-  if (errorKey || !game || !studio) {
+  if (errorKey || releasesErrorKey || !game || !studio) {
     return (
       <section className="studio-page">
         <div className="catalog-state error-state" role="alert">
           <span>{t('studio.gameLoadError')}</span>
-          <strong>{t(errorKey ?? 'studio.errors.notFound')}</strong>
-          <button onClick={retry}>{t('common.retry')}</button>
+          <strong>
+            {t(errorKey ?? releasesErrorKey ?? 'studio.errors.notFound')}
+          </strong>
+          <button
+            onClick={() => {
+              retry();
+              retryReleases();
+            }}
+          >
+            {t('common.retry')}
+          </button>
         </div>
       </section>
     );
@@ -256,50 +351,77 @@ export function StudioGamePage({
         </Link>
       </header>
 
-      <details className="release-scope-note">
-        <summary>{t('studio.localReleasesTitle')}</summary>
-        <p>{t('studio.localReleasesHelp')}</p>
-      </details>
-
       {releases.length === 0 ? (
         <div className="catalog-state">
-          <strong>{t('studio.noLocalReleases')}</strong>
-          <span>{t('studio.noLocalReleasesHelp')}</span>
+          <strong>{t('studio.noReleases')}</strong>
+          <span>{t('studio.noReleasesHelp')}</span>
         </div>
       ) : (
-        <div className="release-list">
-          {releases.map((stored) => (
-            <article className="release-card" key={stored.release.id}>
-              <div className="release-copy">
-                <h2>{stored.release.version}</h2>
-                <span>
-                  {t('studio.releaseNumber', {
-                    number: stored.release.releaseNumber,
+        <>
+          <div className="release-list">
+            {releases.map((release) => (
+              <article className="release-card" key={release.id}>
+                <div className="release-copy">
+                  <h2>{release.version}</h2>
+                  <span>
+                    {t('studio.releaseNumber', {
+                      number: release.releaseNumber,
+                    })}
+                    {' · '}
+                    {new Intl.DateTimeFormat(i18n.language, {
+                      dateStyle: 'medium',
+                    }).format(new Date(release.createdAt))}
+                  </span>
+                </div>
+                <span
+                  className={`release-status status-${release.status.toLowerCase()}`}
+                >
+                  {t(`studio.status.${release.status.toLowerCase()}`, {
+                    defaultValue: release.status,
                   })}
-                  {' · '}
-                  {new Intl.DateTimeFormat(i18n.language, {
-                    dateStyle: 'medium',
-                  }).format(new Date(stored.release.createdAt))}
                 </span>
-              </div>
-              <span
-                className={`release-status status-${stored.release.status.toLowerCase()}`}
+                {release.status !== 'PUBLISHED' && (
+                  <Link
+                    className="secondary-link"
+                    onClick={() => rememberRelease(release)}
+                    to={`/studio/${studio.slug}/games/${game.slug}/releases/${release.id}`}
+                  >
+                    {t('studio.resume')}
+                  </Link>
+                )}
+              </article>
+            ))}
+          </div>
+          {pagination.pages > 1 && (
+            <nav
+              className="release-pagination"
+              aria-label={t('studio.paginationLabel')}
+            >
+              <button
+                className="secondary-action"
+                disabled={pagination.page <= 1}
+                onClick={previous}
+                type="button"
               >
-                {t(`studio.status.${stored.release.status.toLowerCase()}`, {
-                  defaultValue: stored.release.status,
+                {t('studio.previousPage')}
+              </button>
+              <span>
+                {t('studio.pageCount', {
+                  current: pagination.page,
+                  total: pagination.pages,
                 })}
               </span>
-              {stored.release.status !== 'PUBLISHED' && (
-                <Link
-                  className="secondary-link"
-                  to={`/studio/${studio.slug}/games/${game.slug}/releases/${stored.release.id}`}
-                >
-                  {t('studio.resume')}
-                </Link>
-              )}
-            </article>
-          ))}
-        </div>
+              <button
+                className="secondary-action"
+                disabled={pagination.page >= pagination.pages}
+                onClick={next}
+                type="button"
+              >
+                {t('studio.nextPage')}
+              </button>
+            </nav>
+          )}
+        </>
       )}
     </section>
   );

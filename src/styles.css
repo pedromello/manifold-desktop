@@ -1219,31 +1219,31 @@ textarea:focus-visible {
   border: 1px solid rgba(255, 255, 255, 0.11);
   background: rgba(255, 255, 255, 0.035);
 }
-.release-scope-note {
-  max-width: 720px;
-  margin: -7px 0 18px;
-  color: #8f8798;
-  font-size: 11px;
-}
-.release-scope-note summary,
 .technical-details summary {
   width: fit-content;
   color: #aba2b4;
   cursor: pointer;
   font-weight: 700;
 }
-.release-scope-note summary:focus-visible,
 .technical-details summary:focus-visible {
   outline: 3px solid rgba(125, 249, 255, 0.72);
   outline-offset: 3px;
 }
-.release-scope-note p {
-  max-width: 620px;
-  margin: 8px 0 0 16px;
-  line-height: 1.5;
-}
 .release-list {
   display: grid;
+}
+.release-pagination {
+  max-width: 720px;
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+}
+.release-pagination span {
+  color: #91899a;
+  font-size: 11px;
 }
 .release-card {
   min-height: 70px;

@@ -32,8 +32,31 @@ export type PublisherRelease = {
   publishedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  artifacts?: PublisherArtifact[];
 };
 
+export type PublisherArtifact = {
+  id: string;
+  platform: string;
+  architecture: string;
+  archiveFormat: string;
+  compressedSizeBytes: string | null;
+  installedSizeBytes: string | null;
+  sha256: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PublisherReleasePage = {
+  releases: PublisherRelease[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
+};
 export type ArchiveInspection = {
   archivePath: string;
   fileName: string;
@@ -94,6 +117,11 @@ export function isPublisherError(value: unknown): value is PublisherError {
 export interface PublisherAdapter {
   listStudios(): Promise<PublisherStudio[]>;
   listGames(studioSlug: string): Promise<PublisherGame[]>;
+  listReleases(
+    gameSlug: string,
+    page: number,
+    limit: number,
+  ): Promise<PublisherReleasePage>;
   createDraft(
     gameSlug: string,
     version: string,
@@ -122,6 +150,13 @@ export const nativePublisherAdapter: PublisherAdapter = {
   },
   async listGames(studioSlug) {
     return invoke<PublisherGame[]>('list_studio_games', { studioSlug });
+  },
+  listReleases(gameSlug, page, limit) {
+    return invoke<PublisherReleasePage>('list_game_releases', {
+      gameSlug,
+      page,
+      limit,
+    });
   },
   createDraft(gameSlug, version, releaseNotes) {
     return invoke<PublisherRelease>('create_release_draft', {
@@ -221,6 +256,22 @@ export const fixturePublisherAdapter: PublisherAdapter = {
         ),
       },
     ];
+  },
+  async listReleases(gameSlug, page, limit) {
+    const releases = loadStoredPublisherReleases()
+      .filter((value) => value.gameSlug === gameSlug)
+      .map((value) => value.release)
+      .sort((left, right) => right.releaseNumber - left.releaseNumber);
+    const start = (page - 1) * limit;
+    return {
+      releases: releases.slice(start, start + limit),
+      pagination: {
+        page,
+        limit,
+        total: releases.length,
+        pages: Math.ceil(releases.length / limit),
+      },
+    };
   },
   async createDraft(_gameSlug, version, releaseNotes) {
     const now = new Date().toISOString();
