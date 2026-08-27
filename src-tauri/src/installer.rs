@@ -11,7 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
@@ -23,6 +23,10 @@ const MAX_INSTALLATION_LOG_BYTES: u64 = 1_000_000;
 const MAX_DIAGNOSTIC_EVENTS: usize = 100;
 const MAX_ARCHIVE_FILES: usize = 100_000;
 const DOWNLOAD_AUTHORIZATION_EXPIRED: &str = "download authorization expired";
+const DOWNLOAD_INTERRUPTED: &str = "download interrupted after automatic retries";
+const MAX_TRANSIENT_DOWNLOAD_RETRIES: u32 = 4;
+const DOWNLOAD_RETRY_BASE_DELAY_MS: u64 = 200;
+const DOWNLOAD_RETRY_MAX_DELAY_MS: u64 = 3_000;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,12 +38,11 @@ pub struct InstallCommandError {
 
 impl InstallCommandError {
     fn from_message(message: String) -> Self {
-        let authorization_expired = message == DOWNLOAD_AUTHORIZATION_EXPIRED;
         Self {
-            code: if authorization_expired {
-                "DOWNLOAD_AUTHORIZATION_EXPIRED"
-            } else {
-                "INSTALLATION_FAILED"
+            code: match message.as_str() {
+                DOWNLOAD_AUTHORIZATION_EXPIRED => "DOWNLOAD_AUTHORIZATION_EXPIRED",
+                DOWNLOAD_INTERRUPTED => "DOWNLOAD_INTERRUPTED",
+                _ => "INSTALLATION_FAILED",
             }
             .into(),
             message,
@@ -585,9 +588,10 @@ async fn download_artifact(
     tokio::fs::create_dir_all(&download_directory)
         .await
         .map_err(|error| format!("could not create download directory: {error}"))?;
-    let part_path = download_directory.join(format!("{}.part", plan.download.artifact_id));
+    let part_path = partial_download_path(app, &plan.download.artifact_id)?;
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(60 * 30))
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(60))
         .build()
         .map_err(|error| format!("could not initialize downloader: {error}"))?;
     download_to_file(
@@ -605,6 +609,21 @@ async fn download_artifact(
     Ok(part_path)
 }
 
+fn partial_download_path(app: &AppHandle, artifact_id: &str) -> Result<PathBuf, String> {
+    Ok(app_data_directory(app)?
+        .join("downloads")
+        .join(format!("{artifact_id}.part")))
+}
+
+fn saved_download_progress(app: &AppHandle, plan: &DistributionPlan) -> u64 {
+    partial_download_path(app, &plan.download.artifact_id)
+        .ok()
+        .and_then(|path| fs::metadata(path).ok())
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+        .min(plan.download.total_size_bytes.parse::<u64>().unwrap_or(0))
+}
+
 async fn download_to_file<F>(
     client: &reqwest::Client,
     url: &str,
@@ -617,69 +636,241 @@ async fn download_to_file<F>(
 where
     F: FnMut(u64),
 {
-    if cancellation.load(Ordering::Relaxed) {
-        return Err("installation cancelled".into());
+    let mut retries_without_progress = 0;
+    let mut restarted_invalid_range = false;
+
+    'request: loop {
+        ensure_not_cancelled(cancellation)?;
+        let mut existing = partial_file_size(part_path).await;
+        if existing > total {
+            truncate_partial_file(part_path).await?;
+            existing = 0;
+        }
+        if existing == total {
+            on_progress(existing);
+            return Ok(());
+        }
+
+        let mut request = client.get(url);
+        if existing > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+            if let Some(etag) = etag {
+                request = request.header(reqwest::header::IF_RANGE, etag);
+            }
+        }
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(_) => {
+                retry_or_fail(&mut retries_without_progress, false, cancellation).await?;
+                continue;
+            }
+        };
+        let status = response.status();
+        if matches!(
+            status,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) {
+            return Err(DOWNLOAD_AUTHORIZATION_EXPIRED.into());
+        }
+        if is_transient_download_status(status) {
+            retry_or_fail(&mut retries_without_progress, false, cancellation).await?;
+            continue;
+        }
+        if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && existing > 0 {
+            if restarted_invalid_range {
+                return Err("artifact server repeatedly rejected the saved range".into());
+            }
+            truncate_partial_file(part_path).await?;
+            restarted_invalid_range = true;
+            retries_without_progress = 0;
+            continue;
+        }
+        if !status.is_success() {
+            return Err(format!("artifact server returned {status}"));
+        }
+
+        let resumed = existing > 0 && status == reqwest::StatusCode::PARTIAL_CONTENT;
+        validate_download_response(&response, existing, total, etag, resumed)?;
+        let mut downloaded = if resumed { existing } else { 0 };
+        let request_start = downloaded;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(resumed)
+            .truncate(!resumed)
+            .open(part_path)
+            .await
+            .map_err(|error| format!("could not open partial download: {error}"))?;
+        let mut stream = response.bytes_stream();
+        on_progress(downloaded);
+        while let Some(chunk) = stream.next().await {
+            ensure_not_cancelled(cancellation)?;
+            let chunk = match chunk {
+                Ok(chunk) => chunk,
+                Err(_) => {
+                    file.flush()
+                        .await
+                        .map_err(|error| format!("could not flush artifact: {error}"))?;
+                    retry_or_fail(
+                        &mut retries_without_progress,
+                        downloaded > request_start,
+                        cancellation,
+                    )
+                    .await?;
+                    continue 'request;
+                }
+            };
+            file.write_all(&chunk)
+                .await
+                .map_err(|error| format!("could not save artifact: {error}"))?;
+            downloaded = downloaded
+                .checked_add(chunk.len() as u64)
+                .ok_or("artifact download size overflow")?;
+            if downloaded > total {
+                return Err(format!(
+                    "artifact size mismatch: expected {total} bytes, received more"
+                ));
+            }
+            on_progress(downloaded);
+        }
+        file.flush()
+            .await
+            .map_err(|error| format!("could not flush artifact: {error}"))?;
+        if downloaded == total {
+            return Ok(());
+        }
+        retry_or_fail(
+            &mut retries_without_progress,
+            downloaded > request_start,
+            cancellation,
+        )
+        .await?;
     }
-    let existing = tokio::fs::metadata(part_path)
+}
+
+fn ensure_not_cancelled(cancellation: &AtomicBool) -> Result<(), String> {
+    if cancellation.load(Ordering::Relaxed) {
+        Err("installation cancelled".into())
+    } else {
+        Ok(())
+    }
+}
+
+async fn partial_file_size(path: &Path) -> u64 {
+    tokio::fs::metadata(path)
         .await
         .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    if existing == total {
-        on_progress(existing);
-        return Ok(());
-    }
-    let mut request = client.get(url);
-    if existing > 0 && existing < total {
-        request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
-        if let Some(etag) = etag {
-            request = request.header(reqwest::header::IF_RANGE, etag);
-        }
-    }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("artifact download failed: {error}"))?;
-    if matches!(
-        response.status(),
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
-    ) {
-        return Err(DOWNLOAD_AUTHORIZATION_EXPIRED.into());
-    }
-    if !response.status().is_success() {
-        return Err(format!("artifact server returned {}", response.status()));
-    }
-    let resumed = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-    let mut downloaded = if resumed { existing } else { 0 };
-    let mut file = tokio::fs::OpenOptions::new()
+        .unwrap_or(0)
+}
+
+async fn truncate_partial_file(path: &Path) -> Result<(), String> {
+    tokio::fs::OpenOptions::new()
         .create(true)
         .write(true)
-        .append(resumed)
-        .truncate(!resumed)
-        .open(part_path)
+        .truncate(true)
+        .open(path)
         .await
-        .map_err(|error| format!("could not open partial download: {error}"))?;
-    let mut stream = response.bytes_stream();
-    on_progress(downloaded);
-    while let Some(chunk) = stream.next().await {
-        if cancellation.load(Ordering::Relaxed) {
-            return Err("installation cancelled".into());
+        .map(|_| ())
+        .map_err(|error| format!("could not reset partial download: {error}"))
+}
+
+fn is_transient_download_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT
+            | reqwest::StatusCode::TOO_MANY_REQUESTS
+            | reqwest::StatusCode::INTERNAL_SERVER_ERROR
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    )
+}
+
+fn parse_content_range(value: &str) -> Option<(u64, u64, u64)> {
+    let value = value.strip_prefix("bytes ")?;
+    let (range, total) = value.split_once('/')?;
+    let (start, end) = range.split_once('-')?;
+    Some((start.parse().ok()?, end.parse().ok()?, total.parse().ok()?))
+}
+
+fn validate_download_response(
+    response: &reqwest::Response,
+    existing: u64,
+    total: u64,
+    etag: Option<&str>,
+    resumed: bool,
+) -> Result<(), String> {
+    if resumed {
+        let content_range = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(parse_content_range)
+            .ok_or("artifact server returned an invalid Content-Range")?;
+        if content_range.0 != existing
+            || content_range.1 < content_range.0
+            || content_range.1 >= total
+            || content_range.2 != total
+        {
+            return Err("artifact server returned an unexpected Content-Range".into());
         }
-        let chunk = chunk.map_err(|error| format!("artifact download interrupted: {error}"))?;
-        file.write_all(&chunk)
-            .await
-            .map_err(|error| format!("could not save artifact: {error}"))?;
-        downloaded += chunk.len() as u64;
-        on_progress(downloaded);
-    }
-    file.flush()
-        .await
-        .map_err(|error| format!("could not flush artifact: {error}"))?;
-    if downloaded != total {
-        return Err(format!(
-            "artifact size mismatch: expected {total} bytes, received {downloaded}"
-        ));
+        if let Some(length) = response.content_length() {
+            let expected_length = content_range.1 - content_range.0 + 1;
+            if length != expected_length {
+                return Err("artifact partial response length does not match its range".into());
+            }
+        }
+        if let Some(expected_etag) = etag {
+            let response_etag = response
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|value| value.to_str().ok())
+                .ok_or("artifact partial response is missing its ETag")?;
+            if response_etag != expected_etag {
+                return Err("artifact ETag changed while resuming the download".into());
+            }
+        }
+    } else if let Some(length) = response.content_length() {
+        if length != total {
+            return Err("artifact response length does not match its declaration".into());
+        }
     }
     Ok(())
+}
+
+async fn retry_or_fail(
+    retries_without_progress: &mut u32,
+    made_progress: bool,
+    cancellation: &AtomicBool,
+) -> Result<(), String> {
+    if made_progress {
+        *retries_without_progress = 0;
+    } else {
+        *retries_without_progress += 1;
+    }
+    if *retries_without_progress > MAX_TRANSIENT_DOWNLOAD_RETRIES {
+        return Err(DOWNLOAD_INTERRUPTED.into());
+    }
+    wait_before_retry(*retries_without_progress, cancellation).await
+}
+
+async fn wait_before_retry(attempt: u32, cancellation: &AtomicBool) -> Result<(), String> {
+    let exponent = attempt.saturating_sub(1).min(10);
+    let cap = DOWNLOAD_RETRY_BASE_DELAY_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(DOWNLOAD_RETRY_MAX_DELAY_MS);
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64;
+    let mut remaining = if cfg!(test) { 0 } else { seed % (cap + 1) };
+    while remaining > 0 {
+        ensure_not_cancelled(cancellation)?;
+        let slice = remaining.min(100);
+        tokio::time::sleep(Duration::from_millis(slice)).await;
+        remaining -= slice;
+    }
+    ensure_not_cancelled(cancellation)
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
@@ -960,14 +1151,28 @@ pub async fn install_game(
             append_install_diagnostic(&app, &plan, "CANCELLED", Some("CANCELLED"));
             emit_progress(&app, &plan, &title, "cancelled", 0, 0, None)
         }
-        Err(error) if error == DOWNLOAD_AUTHORIZATION_EXPIRED => {
-            append_install_diagnostic(
+        Err(error)
+            if matches!(
+                error.as_str(),
+                DOWNLOAD_AUTHORIZATION_EXPIRED | DOWNLOAD_INTERRUPTED
+            ) =>
+        {
+            let error_code = if error == DOWNLOAD_AUTHORIZATION_EXPIRED {
+                "DOWNLOAD_AUTHORIZATION_EXPIRED"
+            } else {
+                "DOWNLOAD_INTERRUPTED"
+            };
+            append_install_diagnostic(&app, &plan, "DOWNLOAD_RECOVERY_REQUIRED", Some(error_code));
+            let total = plan.download.total_size_bytes.parse::<u64>().unwrap_or(0);
+            emit_progress(
                 &app,
                 &plan,
-                "AUTHORIZATION_REFRESH_REQUIRED",
-                Some("DOWNLOAD_AUTHORIZATION_EXPIRED"),
-            );
-            emit_progress(&app, &plan, &title, "resolving", 0, 0, None)
+                &title,
+                "downloading",
+                saved_download_progress(&app, &plan),
+                total,
+                None,
+            )
         }
         Err(error) => {
             append_install_diagnostic(&app, &plan, "FAILED", Some(classify_install_error(error)));
@@ -1274,7 +1479,7 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..count]);
             assert!(request.to_ascii_lowercase().contains("range: bytes=4-"));
             stream
-                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfold")
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nContent-Range: bytes 4-7/8\r\nConnection: close\r\n\r\nfold")
                 .unwrap();
         });
         let directory = tempfile::tempdir().unwrap();
@@ -1298,7 +1503,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retries_a_short_download_from_the_saved_partial_file() {
+    async fn automatically_retries_a_short_download_from_the_saved_partial_file() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = thread::spawn(move || {
@@ -1311,8 +1516,9 @@ mod tests {
             let first_request = String::from_utf8_lossy(&request[..count]);
             assert!(!first_request.to_ascii_lowercase().contains("range:"));
             first
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nmani")
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nmani")
                 .unwrap();
+            drop(first);
 
             let (mut second, _) = listener.accept().unwrap();
             second
@@ -1325,27 +1531,13 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("range: bytes=4-"));
             second
-                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfold")
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nContent-Range: bytes 4-7/8\r\nConnection: close\r\n\r\nfold")
                 .unwrap();
         });
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("artifact.part");
         let client = reqwest::Client::new();
         let cancellation = AtomicBool::new(false);
-
-        let first_error = download_to_file(
-            &client,
-            &format!("http://{address}/artifact.zip"),
-            &path,
-            8,
-            None,
-            &cancellation,
-            |_| {},
-        )
-        .await
-        .unwrap_err();
-        assert!(first_error.contains("artifact size mismatch"));
-        assert_eq!(fs::read(&path).unwrap(), b"mani");
 
         download_to_file(
             &client,
@@ -1360,6 +1552,196 @@ mod tests {
         .unwrap();
         server.join().unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"manifold");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_partial_response_for_the_wrong_offset() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 5\r\nContent-Range: bytes 3-7/8\r\nConnection: close\r\n\r\nifold")
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        fs::write(&path, b"mani").unwrap();
+        let cancellation = AtomicBool::new(false);
+
+        let error = download_to_file(
+            &reqwest::Client::new(),
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.contains("unexpected Content-Range"));
+        assert_eq!(fs::read(&path).unwrap(), b"mani");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_changed_etag_while_resuming() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nContent-Range: bytes 4-7/8\r\nETag: artifact-v2\r\nConnection: close\r\n\r\nfold")
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        fs::write(&path, b"mani").unwrap();
+        let cancellation = AtomicBool::new(false);
+
+        let error = download_to_file(
+            &reqwest::Client::new(),
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            Some("artifact-v1"),
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        server.join().unwrap();
+        assert!(error.contains("ETag changed"));
+        assert_eq!(fs::read(&path).unwrap(), b"mani");
+    }
+
+    #[tokio::test]
+    async fn safely_restarts_once_when_storage_rejects_the_saved_range() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let count = first.read(&mut request).unwrap();
+            let request_text = String::from_utf8_lossy(&request[..count]);
+            assert!(request_text
+                .to_ascii_lowercase()
+                .contains("range: bytes=4-"));
+            first
+                .write_all(b"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+
+            let (mut second, _) = listener.accept().unwrap();
+            let count = second.read(&mut request).unwrap();
+            let request_text = String::from_utf8_lossy(&request[..count]);
+            assert!(!request_text.to_ascii_lowercase().contains("range:"));
+            second
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nmanifold",
+                )
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        fs::write(&path, b"mani").unwrap();
+        let cancellation = AtomicBool::new(false);
+
+        download_to_file(
+            &reqwest::Client::new(),
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"manifold");
+    }
+
+    #[tokio::test]
+    async fn retries_transient_storage_failures_without_exposing_them() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = first.read(&mut request).unwrap();
+            first
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .unwrap();
+
+            let (mut second, _) = listener.accept().unwrap();
+            let count = second.read(&mut request).unwrap();
+            let request = String::from_utf8_lossy(&request[..count]);
+            assert!(request.to_ascii_lowercase().contains("range: bytes=4-"));
+            second
+                .write_all(b"HTTP/1.1 206 Partial Content\r\nContent-Length: 4\r\nContent-Range: bytes 4-7/8\r\nConnection: close\r\n\r\nfold")
+                .unwrap();
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        fs::write(&path, b"mani").unwrap();
+        let cancellation = AtomicBool::new(false);
+
+        download_to_file(
+            &reqwest::Client::new(),
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        server.join().unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"manifold");
+    }
+
+    #[tokio::test]
+    async fn stops_after_bounded_transient_failures_without_progress() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            for _ in 0..=MAX_TRANSIENT_DOWNLOAD_RETRIES {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request).unwrap();
+                stream
+                    .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .unwrap();
+            }
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.part");
+        let cancellation = AtomicBool::new(false);
+
+        let error = download_to_file(
+            &reqwest::Client::new(),
+            &format!("http://{address}/artifact.zip"),
+            &path,
+            8,
+            None,
+            &cancellation,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+
+        server.join().unwrap();
+        assert_eq!(error, DOWNLOAD_INTERRUPTED);
     }
 
     #[test]

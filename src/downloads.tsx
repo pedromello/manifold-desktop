@@ -23,6 +23,17 @@ function humanBytes(value: number, locale: string) {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value / 1024 ** index)} ${units[index]}`;
 }
 
+function humanDuration(value: number, locale: string) {
+  const format = new Intl.NumberFormat(locale, { maximumFractionDigits: 0 });
+  if (value < 60) return `${format.format(Math.max(1, Math.ceil(value)))} s`;
+  if (value < 3_600) return `${format.format(Math.ceil(value / 60))} min`;
+  const hours = Math.floor(value / 3_600);
+  const minutes = Math.ceil((value % 3_600) / 60);
+  return minutes > 0
+    ? `${format.format(hours)} h ${format.format(minutes)} min`
+    : `${format.format(hours)} h`;
+}
+
 export function DownloadsPage() {
   const { t, i18n } = useTranslation();
   const { cancel, progress, install } = useInstallations();
@@ -108,6 +119,25 @@ export function DownloadsPage() {
                             })}
                           </span>
                         )}
+                        {job.phase === 'downloading' &&
+                          job.bytesPerSecond &&
+                          job.estimatedSecondsRemaining && (
+                            <span>
+                              {t('downloads.rate', {
+                                rate: humanBytes(
+                                  job.bytesPerSecond,
+                                  i18n.language,
+                                ),
+                              })}{' '}
+                              ·{' '}
+                              {t('downloads.remaining', {
+                                time: humanDuration(
+                                  job.estimatedSecondsRemaining,
+                                  i18n.language,
+                                ),
+                              })}
+                            </span>
+                          )}
                       </div>
                     </>
                   )}

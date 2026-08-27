@@ -292,6 +292,8 @@ const resources = {
           'Tentar novamente não resolverá este problema agora. Verifique sua conta ou aguarde uma correção.',
         retry: 'Tentar novamente',
         bytes: '{{done}} de {{total}}',
+        rate: '{{rate}}/s',
+        remaining: '{{time}} restantes',
         progressLabel: 'Progresso de {{title}}',
       },
       settings: {
@@ -350,6 +352,8 @@ const resources = {
         rateLimited: 'Muitas tentativas. Aguarde um momento e tente novamente.',
         downloadAuthorizationExpired:
           'A autorização do download expirou. Tente novamente para continuar de onde parou.',
+        downloadInterrupted:
+          'Não foi possível continuar o download automaticamente.',
         serviceUnavailable:
           'O serviço de distribuição está temporariamente indisponível.',
         incompatibleResponse:
@@ -631,6 +635,8 @@ const resources = {
           'Trying again will not resolve this yet. Check your account or wait for a fix.',
         retry: 'Try again',
         bytes: '{{done}} of {{total}}',
+        rate: '{{rate}}/s',
+        remaining: '{{time}} remaining',
         progressLabel: '{{title}} progress',
       },
       settings: {
@@ -688,6 +694,7 @@ const resources = {
         rateLimited: 'Too many attempts. Wait a moment and try again.',
         downloadAuthorizationExpired:
           'The download authorization expired. Try again to continue where it stopped.',
+        downloadInterrupted: 'The download could not continue automatically.',
         serviceUnavailable:
           'The distribution service is temporarily unavailable.',
         incompatibleResponse:
