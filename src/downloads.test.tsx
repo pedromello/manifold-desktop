@@ -15,6 +15,8 @@ const installation = vi.hoisted(() => ({
       totalBytes: 2048,
       version: '1.0.0',
       error: null,
+      bytesPerSecond: undefined as number | undefined,
+      estimatedSecondsRemaining: undefined as number | undefined,
     },
   },
 }));
@@ -27,6 +29,23 @@ afterEach(() => {
   cleanup();
   installation.cancel.mockReset();
   installation.install.mockReset();
+  installation.progress.capyvarias.phase = 'extracting';
+  installation.progress.capyvarias.bytesPerSecond = undefined;
+  installation.progress.capyvarias.estimatedSecondsRemaining = undefined;
+});
+
+it('shows a localized speed and ETA only while bytes are downloading', () => {
+  installation.progress.capyvarias.phase = 'downloading';
+  installation.progress.capyvarias.bytesPerSecond = 1_024;
+  installation.progress.capyvarias.estimatedSecondsRemaining = 90;
+  render(
+    <MemoryRouter>
+      <DownloadsPage />
+    </MemoryRouter>,
+  );
+
+  expect(screen.getByText(/1 KB\/s/)).toBeInTheDocument();
+  expect(screen.getByText(/2 min remaining/)).toBeInTheDocument();
 });
 
 it('announces extraction progress with accessible progress semantics', () => {

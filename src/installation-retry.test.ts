@@ -93,3 +93,53 @@ it('renews after storage rejects an expired URL and retries the native install',
   expect(resolve).toHaveBeenCalledTimes(2);
   expect(install).toHaveBeenNthCalledWith(2, 'Capyvarias', fresh);
 });
+
+it('transparently obtains a fresh authorization after native network recovery is exhausted', async () => {
+  const fresh = {
+    ...plan,
+    download: { ...plan.download, url: 'https://downloads.example.test/fresh' },
+  };
+  const resolve = vi.fn().mockResolvedValueOnce(plan).mockResolvedValue(fresh);
+  const install = vi
+    .fn()
+    .mockRejectedValueOnce({
+      code: 'DOWNLOAD_INTERRUPTED',
+      message: 'interrupted',
+      retryable: true,
+    })
+    .mockResolvedValueOnce({ gameSlug: 'capyvarias' });
+
+  await installWithAuthorizationRefresh(
+    { resolve, latest: vi.fn() },
+    'capyvarias',
+    'Capyvarias',
+    install,
+    () => Date.parse('2026-08-20T20:00:00.000Z'),
+  );
+
+  expect(resolve).toHaveBeenCalledTimes(2);
+  expect(install).toHaveBeenNthCalledWith(2, 'Capyvarias', fresh);
+});
+
+it('bounds consecutive automatic recoveries when no attempt succeeds', async () => {
+  const failure = {
+    code: 'DOWNLOAD_INTERRUPTED',
+    message: 'interrupted',
+    retryable: true,
+  };
+  const resolve = vi.fn().mockResolvedValue(plan);
+  const install = vi.fn().mockRejectedValue(failure);
+
+  await expect(
+    installWithAuthorizationRefresh(
+      { resolve, latest: vi.fn() },
+      'capyvarias',
+      'Capyvarias',
+      install,
+      () => Date.parse('2026-08-20T20:00:00.000Z'),
+    ),
+  ).rejects.toEqual(failure);
+
+  expect(resolve).toHaveBeenCalledTimes(9);
+  expect(install).toHaveBeenCalledTimes(9);
+});

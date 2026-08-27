@@ -7,8 +7,10 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
+import { DownloadMetricState, updateDownloadMetrics } from './download-metrics';
 import {
   DistributionAdapter,
   DistributionPlan,
@@ -42,6 +44,8 @@ export type InstallationProgress = {
   error: string | null;
   errorCode?: DistributionErrorCode;
   retryable?: boolean;
+  bytesPerSecond?: number;
+  estimatedSecondsRemaining?: number;
 };
 
 export type InstalledGame = {
@@ -100,6 +104,7 @@ export function InstallationProvider({
   const [availableUpdates, setAvailableUpdates] = useState<
     Record<string, string>
   >({});
+  const downloadMetrics = useRef<Record<string, DownloadMetricState>>({});
 
   const refresh = useCallback(async () => {
     try {
@@ -119,7 +124,26 @@ export function InstallationProvider({
     void listen<InstallationProgress>('installation-progress', (event) => {
       if (!active) return;
       const update = event.payload;
-      setProgress((current) => ({ ...current, [update.gameSlug]: update }));
+      if (update.phase === 'downloading') {
+        const metrics = updateDownloadMetrics(
+          downloadMetrics.current[update.gameSlug],
+          update.downloadedBytes,
+          update.totalBytes,
+          performance.now(),
+        );
+        downloadMetrics.current[update.gameSlug] = metrics.state;
+        setProgress((current) => ({
+          ...current,
+          [update.gameSlug]: {
+            ...update,
+            bytesPerSecond: metrics.bytesPerSecond,
+            estimatedSecondsRemaining: metrics.estimatedSecondsRemaining,
+          },
+        }));
+      } else {
+        delete downloadMetrics.current[update.gameSlug];
+        setProgress((current) => ({ ...current, [update.gameSlug]: update }));
+      }
       if (update.phase === 'installed') void refresh();
     })
       .then((unlisten) => {
@@ -135,6 +159,7 @@ export function InstallationProvider({
 
   const install = useCallback(
     async (gameSlug: string, title: string) => {
+      delete downloadMetrics.current[gameSlug];
       setProgress((current) => ({
         ...current,
         [gameSlug]: {
