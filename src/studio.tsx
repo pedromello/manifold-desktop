@@ -123,18 +123,13 @@ export function StudioPage({
       </header>
 
       {studio && (
-        <div className="studio-summary">
-          <span className="studio-mark" aria-hidden="true">
-            {studio.name.slice(0, 1).toUpperCase()}
-          </span>
-          <div>
+        <div className="studio-context">
+          <div className="studio-identity">
             <strong>{studio.name}</strong>
             <span>{studio.description || t('studio.noDescription')}</span>
           </div>
           {studio.isPublisher && (
-            <span className="status-badge status-published">
-              {t('studio.publisher')}
-            </span>
+            <span className="studio-access">{t('studio.publisher')}</span>
           )}
         </div>
       )}
@@ -156,9 +151,9 @@ export function StudioPage({
           <span>{t('studio.emptyHelp')}</span>
         </div>
       ) : (
-        <div className="studio-game-grid">
+        <div className="studio-game-list">
           {games.map((game) => (
-            <article className="studio-game-card" key={game.id}>
+            <article className="studio-game-row" key={game.id}>
               <div className="studio-game-art">
                 {game.bannerUrl || game.iconUrl ? (
                   <img src={game.bannerUrl ?? game.iconUrl ?? ''} alt="" />
@@ -166,19 +161,23 @@ export function StudioPage({
                   <span>{game.title.slice(0, 1).toUpperCase()}</span>
                 )}
               </div>
-              <div>
-                <span className="status-badge">{game.status}</span>
+              <div className="studio-game-copy">
                 <h2>{game.title}</h2>
                 <p>{game.description}</p>
-                <button
-                  className="game-action"
-                  onClick={() =>
-                    navigate(`/studio/${selectedSlug}/games/${game.slug}`)
-                  }
-                >
-                  {t('studio.manageGame')}
-                </button>
               </div>
+              <span className="game-state">
+                {t('studio.gameStatus.' + game.status.toLowerCase(), {
+                  defaultValue: game.status,
+                })}
+              </span>
+              <button
+                className="row-action"
+                onClick={() =>
+                  navigate(`/studio/${selectedSlug}/games/${game.slug}`)
+                }
+              >
+                {t('studio.manageGame')} <span aria-hidden="true">→</span>
+              </button>
             </article>
           ))}
         </div>
@@ -257,10 +256,10 @@ export function StudioGamePage({
         </Link>
       </header>
 
-      <div className="backend-notice" role="note">
-        <strong>{t('studio.localReleasesTitle')}</strong>
-        <span>{t('studio.localReleasesHelp')}</span>
-      </div>
+      <details className="release-scope-note">
+        <summary>{t('studio.localReleasesTitle')}</summary>
+        <p>{t('studio.localReleasesHelp')}</p>
+      </details>
 
       {releases.length === 0 ? (
         <div className="catalog-state">
@@ -271,21 +270,20 @@ export function StudioGamePage({
         <div className="release-list">
           {releases.map((stored) => (
             <article className="release-card" key={stored.release.id}>
-              <div>
-                <span className="release-number">
+              <div className="release-copy">
+                <h2>{stored.release.version}</h2>
+                <span>
                   {t('studio.releaseNumber', {
                     number: stored.release.releaseNumber,
                   })}
-                </span>
-                <h2>{stored.release.version}</h2>
-                <span>
+                  {' · '}
                   {new Intl.DateTimeFormat(i18n.language, {
                     dateStyle: 'medium',
                   }).format(new Date(stored.release.createdAt))}
                 </span>
               </div>
               <span
-                className={`status-badge status-${stored.release.status.toLowerCase()}`}
+                className={`release-status status-${stored.release.status.toLowerCase()}`}
               >
                 {t(`studio.status.${stored.release.status.toLowerCase()}`, {
                   defaultValue: stored.release.status,

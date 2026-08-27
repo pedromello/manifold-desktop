@@ -133,11 +133,9 @@ it('locks the reviewed artifact and retries an interrupted upload identically', 
   publishing.publish = publish;
 
   renderStoredDraft(publishing);
-  fireEvent.click(
-    await screen.findByRole('button', { name: 'Upload and publish' }),
-  );
+  fireEvent.click(await screen.findByRole('button', { name: 'Send version' }));
 
-  const retry = await screen.findByRole('button', { name: 'Retry upload' });
+  const retry = await screen.findByRole('button', { name: 'Try again' });
   expect(screen.getByRole('combobox')).toBeDisabled();
   expect(screen.getByRole('button', { name: 'Change file' })).toBeDisabled();
   fireEvent.click(retry);
@@ -168,13 +166,13 @@ it('cancels an active upload and returns to the retryable review state', async (
   );
 
   renderStoredDraft(publishing);
+  fireEvent.click(await screen.findByRole('button', { name: 'Send version' }));
   fireEvent.click(
-    await screen.findByRole('button', { name: 'Upload and publish' }),
+    await screen.findByRole('button', { name: 'Cancel sending' }),
   );
-  fireEvent.click(await screen.findByRole('button', { name: 'Cancel upload' }));
 
   expect(publishing.cancel).toHaveBeenCalledWith('release-1');
   expect(
-    await screen.findByRole('button', { name: 'Retry upload' }),
+    await screen.findByRole('button', { name: 'Try again' }),
   ).toBeInTheDocument();
 });

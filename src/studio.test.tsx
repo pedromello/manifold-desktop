@@ -67,7 +67,7 @@ it('shows a studio selector and its games without asking for technical ids', asy
     await screen.findByRole('heading', { name: 'A Friendly Game' }),
   ).toBeInTheDocument();
   expect(
-    screen.getByRole('button', { name: 'Manage releases' }),
+    screen.getByRole('button', { name: 'View versions' }),
   ).toBeInTheDocument();
   expect(screen.queryByText('game-1')).not.toBeInTheDocument();
 });

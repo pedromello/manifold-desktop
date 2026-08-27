@@ -163,7 +163,7 @@ const fixtureStudio: PublisherStudio = {
   id: 'fixture-studio',
   slug: 'manifold-labs',
   name: 'Manifold Labs',
-  description: 'Fixture data for local UI review',
+  description: '',
   logoUrl: null,
   isPublisher: true,
   ownerId: 'fixture-owner',
@@ -173,7 +173,7 @@ const fixtureGame: PublisherGame = {
   id: 'fixture-game',
   slug: 'peggys-post',
   title: "Peggy's Post",
-  description: 'A Windows build ready for its next release.',
+  description: '',
   status: 'ACTIVE',
   bannerUrl: null,
   iconUrl: null,
@@ -181,12 +181,32 @@ const fixtureGame: PublisherGame = {
 
 let fixtureReleaseNumber = 1;
 
+function fixtureText(portuguese: string, english: string) {
+  return document.documentElement.lang === 'pt-BR' ? portuguese : english;
+}
+
 export const fixturePublisherAdapter: PublisherAdapter = {
   async listStudios() {
-    return [fixtureStudio];
+    return [
+      {
+        ...fixtureStudio,
+        description: fixtureText(
+          'Dados locais para revisão visual',
+          'Local data for visual review',
+        ),
+      },
+    ];
   },
   async listGames() {
-    return [fixtureGame];
+    return [
+      {
+        ...fixtureGame,
+        description: fixtureText(
+          'Uma versão para Windows pronta para publicação.',
+          'A Windows version ready to publish.',
+        ),
+      },
+    ];
   },
   async createDraft(_gameSlug, version, releaseNotes) {
     const now = new Date().toISOString();

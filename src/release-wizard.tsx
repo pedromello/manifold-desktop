@@ -58,28 +58,39 @@ function errorKey(error: unknown) {
 
 function WizardSteps({ current }: { current: number }) {
   const { t } = useTranslation();
-  const labels = [
-    'data',
-    'file',
-    'preflight',
-    'manifest',
-    'upload',
-    'verify',
-    'success',
-  ];
+  const labels = ['details', 'file', 'review', 'publish'];
+  const complete = current === 6;
+  const macroCurrent =
+    current === 0 ? 0 : current <= 2 ? 1 : current === 3 ? 2 : 3;
   return (
-    <ol className="wizard-steps" aria-label={t('publisher.progress')}>
-      {labels.map((label, index) => (
-        <li
-          className={index < current ? 'complete' : undefined}
-          aria-current={index === current ? 'step' : undefined}
-          key={label}
-        >
-          <span>{index < current ? '✓' : index + 1}</span>
-          <strong>{t(`publisher.steps.${label}`)}</strong>
-        </li>
-      ))}
-    </ol>
+    <div className="wizard-progress">
+      <span className="wizard-step-count">
+        {complete
+          ? t('publisher.completed')
+          : t('publisher.stepCount', {
+              current: macroCurrent + 1,
+              total: labels.length,
+            })}
+      </span>
+      <ol className="wizard-steps" aria-label={t('publisher.progress')}>
+        {labels.map((label, index) => (
+          <li
+            className={
+              index < macroCurrent || complete ? 'complete' : undefined
+            }
+            aria-current={
+              !complete && index === macroCurrent ? 'step' : undefined
+            }
+            key={label}
+          >
+            <span aria-hidden="true">
+              {index < macroCurrent || complete ? '✓' : index + 1}
+            </span>
+            <strong>{t(`publisher.steps.${label}`)}</strong>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -170,7 +181,6 @@ export function ReleaseWizardRoute({
           <WizardSteps current={0} />
           <div className="wizard-card">
             <div className="wizard-heading">
-              <span>1</span>
               <div>
                 <h2>{t('publisher.dataTitle')}</h2>
                 <p>{t('publisher.dataHelp')}</p>
@@ -372,290 +382,296 @@ function ReleaseArtifactWizard({
   return (
     <>
       <WizardSteps current={currentStep} />
-      <div
-        className="release-context"
-        aria-label={t('publisher.releaseSummary')}
-      >
-        <div>
-          <span>{t('publisher.version')}</span>
-          <strong>{stored.release.version}</strong>
-        </div>
-        <div>
-          <span>{t('publisher.release')}</span>
-          <strong>#{stored.release.releaseNumber}</strong>
-        </div>
-        <div>
-          <span>{t('publisher.platform')}</span>
-          <strong>Windows · x86-64 · ZIP</strong>
-        </div>
-        <span className="status-badge status-draft">
-          {stored.release.status}
-        </span>
-      </div>
+      <div className="publisher-workspace">
+        <div className="publisher-main">
+          {(stored.phase === 'file' || stored.phase === 'preflight') && (
+            <div className="wizard-card">
+              <div className="wizard-heading">
+                <div>
+                  <h2 ref={headingRef} tabIndex={-1}>
+                    {stored.phase === 'preflight'
+                      ? t('publisher.preflightTitle')
+                      : t('publisher.fileTitle')}
+                  </h2>
+                  <p>
+                    {stored.phase === 'preflight'
+                      ? t('publisher.preflightHelp')
+                      : t('publisher.fileHelp')}
+                  </p>
+                </div>
+              </div>
+              {stored.archivePath && (
+                <div className="selected-file">
+                  <span aria-hidden="true">ZIP</span>
+                  <div>
+                    <strong>
+                      {stored.archivePath.split(/[\\/]/).at(-1) ??
+                        stored.archivePath}
+                    </strong>
+                    <small>{t('publisher.fileSelected')}</small>
+                  </div>
+                </div>
+              )}
+              {stored.phase === 'preflight' ? (
+                <div className="analysis-state" role="status">
+                  <span className="spinner" />
+                  <div>
+                    <strong>{t('publisher.analyzing')}</strong>
+                    <span>{t('publisher.analyzingHelp')}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="wizard-actions">
+                  <button
+                    className="secondary-action"
+                    disabled={busy}
+                    type="button"
+                    onClick={() => void selectArchive()}
+                  >
+                    {stored.archivePath
+                      ? t('publisher.changeFile')
+                      : t('publisher.chooseFile')}
+                  </button>
+                  <button
+                    className="game-action"
+                    disabled={!stored.archivePath || busy}
+                    type="button"
+                    onClick={() => void inspectArchive()}
+                  >
+                    {t('publisher.analyze')}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
 
-      {(stored.phase === 'file' || stored.phase === 'preflight') && (
-        <div className="wizard-card">
-          <div className="wizard-heading">
-            <span>{stored.phase === 'preflight' ? 3 : 2}</span>
-            <div>
+          {stored.phase === 'manifest' && inspection && manifest && (
+            <div className="wizard-card">
+              <div className="wizard-heading">
+                <div>
+                  <h2 ref={headingRef} tabIndex={-1}>
+                    {t('publisher.manifestTitle')}
+                  </h2>
+                  <p>{t('publisher.manifestHelp')}</p>
+                </div>
+              </div>
+              <div className="file-overview">
+                <div>
+                  <span>{t('publisher.archiveSize')}</span>
+                  <strong>
+                    {humanBytes(inspection.compressedSizeBytes, i18n.language)}
+                  </strong>
+                </div>
+                <div>
+                  <span>{t('publisher.installedSize')}</span>
+                  <strong>
+                    {humanBytes(inspection.installedSizeBytes, i18n.language)}
+                  </strong>
+                </div>
+              </div>
+              <label className="manifest-field">
+                <strong>{t('publisher.entrypoint')}</strong>
+                <span>{t('publisher.entrypointHelp')}</span>
+                <select
+                  disabled={stored.uploadStarted}
+                  value={manifest.entrypoint}
+                  onChange={(event) => selectEntrypoint(event.target.value)}
+                >
+                  {inspection.executables.map((executable) => (
+                    <option key={executable} value={executable}>
+                      {executable}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <details className="technical-details">
+                <summary>{t('publisher.technicalDetails')}</summary>
+                <dl className="manifest-review">
+                  <dt>{t('publisher.executables')}</dt>
+                  <dd>{inspection.executables.length}</dd>
+                  <dt>{t('publisher.integrity')}</dt>
+                  <dd>{t('publisher.shaReady')}</dd>
+                  <dt>{t('publisher.workingDirectory')}</dt>
+                  <dd>
+                    {manifest.workingDirectory || t('publisher.archiveRoot')}
+                  </dd>
+                  <dt>{t('publisher.launchArguments')}</dt>
+                  <dd>{t('publisher.none')}</dd>
+                  <dt>{t('publisher.environment')}</dt>
+                  <dd>{t('publisher.none')}</dd>
+                </dl>
+              </details>
+              <div className="approval-line">
+                <span aria-hidden="true">✓</span>
+                <div>
+                  <strong>{t('publisher.readyToSend')}</strong>
+                  <span>
+                    {stored.uploadStarted
+                      ? t('publisher.uploadLocked')
+                      : t('publisher.securityCheckedHelp')}
+                  </span>
+                </div>
+              </div>
+              <div className="wizard-actions">
+                <button
+                  className="secondary-action"
+                  disabled={stored.uploadStarted}
+                  type="button"
+                  onClick={() =>
+                    update((value) => ({
+                      ...value,
+                      phase: 'file',
+                      inspection: null,
+                      manifest: null,
+                    }))
+                  }
+                >
+                  {t('publisher.changeFile')}
+                </button>
+                <button
+                  className="game-action"
+                  disabled={busy}
+                  type="button"
+                  onClick={() => void publish()}
+                >
+                  {stored.uploadStarted
+                    ? t('publisher.retryUpload')
+                    : t('publisher.uploadAndPublish')}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(stored.phase === 'uploading' || stored.phase === 'verifying') && (
+            <div className="wizard-card upload-card">
+              <div className="wizard-heading">
+                <div>
+                  <h2 ref={headingRef} tabIndex={-1}>
+                    {stored.phase === 'verifying'
+                      ? t('publisher.verifyingTitle')
+                      : t('publisher.uploadTitle')}
+                  </h2>
+                  <p>
+                    {stored.phase === 'verifying'
+                      ? t('publisher.verifyingHelp')
+                      : t('publisher.uploadHelp')}
+                  </p>
+                </div>
+              </div>
+              {stored.phase === 'uploading' ? (
+                <>
+                  <div className="upload-meter-row">
+                    <span>{inspection?.fileName}</span>
+                    <strong>{percent}%</strong>
+                  </div>
+                  <div
+                    className="install-progress upload-progress"
+                    role="progressbar"
+                    aria-label={t('publisher.uploadProgress')}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={percent}
+                  >
+                    <span style={{ width: `${percent}%` }} />
+                  </div>
+                  <div className="upload-meter-row secondary">
+                    <span>
+                      {t('publisher.bytesUploaded', {
+                        uploaded: humanBytes(
+                          String(uploadedBytes),
+                          i18n.language,
+                        ),
+                        total: humanBytes(String(totalBytes), i18n.language),
+                      })}
+                    </span>
+                    {attempt > 1 && (
+                      <span>{t('publisher.retryAttempt', { attempt })}</span>
+                    )}
+                  </div>
+                  <button
+                    className="secondary-action cancel-upload"
+                    type="button"
+                    onClick={() => void cancel()}
+                  >
+                    {t('publisher.cancelUpload')}
+                  </button>
+                </>
+              ) : (
+                <div className="analysis-state" role="status">
+                  <span className="spinner" />
+                  <div>
+                    <strong>{t('publisher.verifyingStorage')}</strong>
+                    <span>{t('publisher.verifyingStorageHelp')}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {stored.phase === 'success' && (
+            <div className="wizard-card success-card">
+              <span className="success-mark" aria-hidden="true">
+                ✓
+              </span>
               <h2 ref={headingRef} tabIndex={-1}>
-                {stored.phase === 'preflight'
-                  ? t('publisher.preflightTitle')
-                  : t('publisher.fileTitle')}
+                {t('publisher.successTitle')}
               </h2>
               <p>
-                {stored.phase === 'preflight'
-                  ? t('publisher.preflightHelp')
-                  : t('publisher.fileHelp')}
+                {t('publisher.successHelp', {
+                  version: stored.release.version,
+                  game: stored.gameTitle,
+                })}
               </p>
-            </div>
-          </div>
-          {stored.archivePath && (
-            <div className="selected-file">
-              <span aria-hidden="true">ZIP</span>
-              <div>
-                <strong>
-                  {stored.archivePath.split(/[\\/]/).at(-1) ??
-                    stored.archivePath}
-                </strong>
-                <small>{t('publisher.fileSelected')}</small>
-              </div>
+              <p className="success-meta">
+                {stored.release.version} · #{stored.release.releaseNumber} ·{' '}
+                {t('publisher.published')}
+              </p>
+              <Link
+                className="primary-link"
+                to={`/studio/${stored.studioSlug}/games/${stored.gameSlug}`}
+              >
+                {t('publisher.backToReleases', { game: stored.gameTitle })}
+              </Link>
             </div>
           )}
-          {stored.phase === 'preflight' ? (
-            <div className="analysis-state" role="status">
-              <span className="spinner" />
-              <div>
-                <strong>{t('publisher.analyzing')}</strong>
-                <span>{t('publisher.analyzingHelp')}</span>
-              </div>
-            </div>
-          ) : (
-            <div className="wizard-actions">
-              <button
-                className="secondary-action"
-                disabled={busy}
-                type="button"
-                onClick={() => void selectArchive()}
-              >
-                {stored.archivePath
-                  ? t('publisher.changeFile')
-                  : t('publisher.chooseFile')}
-              </button>
-              <button
-                className="game-action"
-                disabled={!stored.archivePath || busy}
-                type="button"
-                onClick={() => void inspectArchive()}
-              >
-                {t('publisher.analyze')}
-              </button>
-            </div>
+
+          {error && (
+            <p className="form-notice error wizard-error" role="alert">
+              {t(error)}
+            </p>
           )}
         </div>
-      )}
-
-      {stored.phase === 'manifest' && inspection && manifest && (
-        <div className="wizard-card">
-          <div className="wizard-heading">
-            <span>4</span>
+        <aside
+          className="release-sidebar"
+          aria-label={t('publisher.releaseSummary')}
+        >
+          <span className="sidebar-label">{t('publisher.releaseSummary')}</span>
+          <h2>{stored.gameTitle}</h2>
+          <dl>
             <div>
-              <h2 ref={headingRef} tabIndex={-1}>
-                {t('publisher.manifestTitle')}
-              </h2>
-              <p>{t('publisher.manifestHelp')}</p>
-            </div>
-          </div>
-          <div className="preflight-summary">
-            <div>
-              <span>{t('publisher.archiveSize')}</span>
-              <strong>
-                {humanBytes(inspection.compressedSizeBytes, i18n.language)}
-              </strong>
+              <dt>{t('publisher.version')}</dt>
+              <dd>{stored.release.version}</dd>
             </div>
             <div>
-              <span>{t('publisher.installedSize')}</span>
-              <strong>
-                {humanBytes(inspection.installedSizeBytes, i18n.language)}
-              </strong>
+              <dt>{t('publisher.release')}</dt>
+              <dd>#{stored.release.releaseNumber}</dd>
             </div>
             <div>
-              <span>{t('publisher.executables')}</span>
-              <strong>{inspection.executables.length}</strong>
+              <dt>{t('publisher.platform')}</dt>
+              <dd>Windows · 64 bits</dd>
             </div>
-            <div>
-              <span>{t('publisher.integrity')}</span>
-              <strong>{t('publisher.shaReady')}</strong>
-            </div>
-          </div>
-          <label className="manifest-field">
-            <strong>{t('publisher.entrypoint')}</strong>
-            <span>{t('publisher.entrypointHelp')}</span>
-            <select
-              disabled={stored.uploadStarted}
-              value={manifest.entrypoint}
-              onChange={(event) => selectEntrypoint(event.target.value)}
-            >
-              {inspection.executables.map((executable) => (
-                <option key={executable} value={executable}>
-                  {executable}
-                </option>
-              ))}
-            </select>
-          </label>
-          <dl className="manifest-review">
-            <dt>{t('publisher.workingDirectory')}</dt>
-            <dd>{manifest.workingDirectory || t('publisher.archiveRoot')}</dd>
-            <dt>{t('publisher.launchArguments')}</dt>
-            <dd>{t('publisher.none')}</dd>
-            <dt>{t('publisher.environment')}</dt>
-            <dd>{t('publisher.none')}</dd>
           </dl>
-          <div className="security-note">
-            <strong>{t('publisher.securityChecked')}</strong>
-            <span>
-              {stored.uploadStarted
-                ? t('publisher.uploadLocked')
-                : t('publisher.securityCheckedHelp')}
-            </span>
-          </div>
-          <div className="wizard-actions">
-            <button
-              className="secondary-action"
-              disabled={stored.uploadStarted}
-              type="button"
-              onClick={() =>
-                update((value) => ({
-                  ...value,
-                  phase: 'file',
-                  inspection: null,
-                  manifest: null,
-                }))
-              }
-            >
-              {t('publisher.changeFile')}
-            </button>
-            <button
-              className="game-action"
-              disabled={busy}
-              type="button"
-              onClick={() => void publish()}
-            >
-              {stored.uploadStarted
-                ? t('publisher.retryUpload')
-                : t('publisher.uploadAndPublish')}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {(stored.phase === 'uploading' || stored.phase === 'verifying') && (
-        <div className="wizard-card upload-card">
-          <div className="wizard-heading">
-            <span>{stored.phase === 'verifying' ? 6 : 5}</span>
-            <div>
-              <h2 ref={headingRef} tabIndex={-1}>
-                {stored.phase === 'verifying'
-                  ? t('publisher.verifyingTitle')
-                  : t('publisher.uploadTitle')}
-              </h2>
-              <p>
-                {stored.phase === 'verifying'
-                  ? t('publisher.verifyingHelp')
-                  : t('publisher.uploadHelp')}
-              </p>
-            </div>
-          </div>
-          {stored.phase === 'uploading' ? (
-            <>
-              <div className="upload-meter-row">
-                <span>{inspection?.fileName}</span>
-                <strong>{percent}%</strong>
-              </div>
-              <div
-                className="install-progress upload-progress"
-                role="progressbar"
-                aria-label={t('publisher.uploadProgress')}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={percent}
-              >
-                <span style={{ width: `${percent}%` }} />
-              </div>
-              <div className="upload-meter-row secondary">
-                <span>
-                  {t('publisher.bytesUploaded', {
-                    uploaded: humanBytes(String(uploadedBytes), i18n.language),
-                    total: humanBytes(String(totalBytes), i18n.language),
-                  })}
-                </span>
-                {attempt > 1 && (
-                  <span>{t('publisher.retryAttempt', { attempt })}</span>
-                )}
-              </div>
-              <button
-                className="secondary-action cancel-upload"
-                type="button"
-                onClick={() => void cancel()}
-              >
-                {t('publisher.cancelUpload')}
-              </button>
-            </>
-          ) : (
-            <div className="analysis-state" role="status">
-              <span className="spinner" />
-              <div>
-                <strong>{t('publisher.verifyingStorage')}</strong>
-                <span>{t('publisher.verifyingStorageHelp')}</span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {stored.phase === 'success' && (
-        <div className="wizard-card success-card">
-          <span className="success-mark" aria-hidden="true">
-            ✓
-          </span>
-          <span className="eyebrow">{t('publisher.successEyebrow')}</span>
-          <h2 ref={headingRef} tabIndex={-1}>
-            {t('publisher.successTitle')}
-          </h2>
-          <p>
-            {t('publisher.successHelp', {
-              version: stored.release.version,
-              game: stored.gameTitle,
-            })}
-          </p>
-          <div className="published-summary">
-            <div>
-              <span>{t('publisher.version')}</span>
-              <strong>{stored.release.version}</strong>
-            </div>
-            <div>
-              <span>{t('publisher.release')}</span>
-              <strong>#{stored.release.releaseNumber}</strong>
-            </div>
-            <div>
-              <span>{t('publisher.statusLabel')}</span>
-              <strong>{t('publisher.published')}</strong>
-            </div>
-          </div>
-          <Link
-            className="primary-link"
-            to={`/studio/${stored.studioSlug}/games/${stored.gameSlug}`}
+          <span
+            className={`release-sidebar-status ${
+              stored.release.status === 'PUBLISHED' ? 'published' : ''
+            }`}
           >
-            {t('publisher.backToReleases')}
-          </Link>
-        </div>
-      )}
-
-      {error && (
-        <p className="form-notice error wizard-error" role="alert">
-          {t(error)}
-        </p>
-      )}
+            {stored.release.status === 'PUBLISHED'
+              ? t('publisher.published')
+              : t('studio.status.draft')}
+          </span>
+        </aside>
+      </div>
     </>
   );
 }

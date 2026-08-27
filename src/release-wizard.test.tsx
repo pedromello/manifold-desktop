@@ -135,33 +135,35 @@ it('runs the readable draft, file, preflight, manifest and publication stages', 
   );
 
   expect(
-    await screen.findByRole('heading', { name: 'Release details' }),
+    await screen.findByRole('heading', { name: 'Version details' }),
   ).toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Version'), {
     target: { value: '1.2.0' },
   });
-  fireEvent.change(screen.getByLabelText('Release notes'), {
+  fireEvent.change(screen.getByLabelText('What changed'), {
     target: { value: 'Fresh build' },
   });
-  fireEvent.click(
-    screen.getByRole('button', { name: 'Create draft and continue' }),
-  );
+  fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
 
-  fireEvent.click(await screen.findByRole('button', { name: 'Select ZIP' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Choose file' }));
   expect(await screen.findByText('game.zip')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Analyze file' }));
 
   expect(
     await screen.findByRole('heading', {
-      name: 'Choose the executable and review',
+      name: 'Review version',
     }),
   ).toBeInTheDocument();
   expect(
     screen.getByRole('option', { name: 'bin/game.exe' }),
   ).toBeInTheDocument();
-  expect(screen.getByText('SHA-256 calculated')).toBeInTheDocument();
+  const technicalDetails = screen.getByText('Technical details');
+  expect(technicalDetails).toBeInTheDocument();
+  fireEvent.click(technicalDetails);
+  expect(screen.getByText('File verification')).toBeInTheDocument();
+  expect(screen.getByText('Complete')).toBeInTheDocument();
 
-  fireEvent.click(screen.getByRole('button', { name: 'Upload and publish' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Send version' }));
   expect(
     await screen.findByRole('heading', { name: 'Ready for players.' }),
   ).toBeInTheDocument();
