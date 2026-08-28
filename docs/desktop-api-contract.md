@@ -16,6 +16,13 @@ Authentication reuses `/otp`, `/otp/sessions`, and `/sessions`; catalog and
 ownership reuse `/games` and `/library`; release distribution uses general
 `/games/:slug/releases`, `/releases`, and `/artifacts` resources.
 
+Catalog game responses are mode-aware. The desktop accepts a nullable local
+`price` and consumes `status`, `ownership_status`, `purchase_mode`, and
+`external_offer`. `STEAM_ONLY` and `ONLY_DISPLAY` entries are informational:
+they may show the captured Steam offer and an HTTPS Steam link, but they must
+never be presented as free, locally purchasable, downloadable, installable, or
+manageable. A missing external amount means the Steam price is unavailable.
+
 Authentication uses the existing passwordless OTP sequence. A narrow Rust
 command requests the one-time code, another verifies it, and the native HTTP
 layer retains the secure, HTTP-only cookie returned by the backend. Later

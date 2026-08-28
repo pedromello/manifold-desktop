@@ -51,6 +51,9 @@ const resources = {
         featured: 'Destaque na Manifold',
         featuredLabel: 'Jogo em destaque',
         available: 'Disponível na Manifold',
+        viewOnSteam: 'Ver na Steam',
+        steamPriceUnavailable: 'Preço indisponível na Steam',
+        catalogOnly: 'Somente catálogo',
         discover: 'DESCUBRA',
         results: 'Resultados para “{{query}}”',
         new: 'Novidades na Manifold',
@@ -289,6 +292,7 @@ const resources = {
         uninstallFailed:
           'Não foi possível desinstalar o jogo. Tente novamente.',
         unavailableBuild: 'Versão para Windows ainda indisponível',
+        localInstallUnavailable: 'Sem download pela Manifold',
         progressLabel: '{{title}}: {{phase}}',
       },
       downloads: {
@@ -426,6 +430,9 @@ const resources = {
         featured: 'Featured on Manifold',
         featuredLabel: 'Featured game',
         available: 'Available on Manifold',
+        viewOnSteam: 'View on Steam',
+        steamPriceUnavailable: 'Steam price unavailable',
+        catalogOnly: 'Catalog only',
         discover: 'DISCOVER',
         results: 'Results for “{{query}}”',
         new: 'New on Manifold',
@@ -659,6 +666,7 @@ const resources = {
         uninstallNotInstalled: 'This game is no longer installed.',
         uninstallFailed: 'The game could not be uninstalled. Try again.',
         unavailableBuild: 'Windows build not available yet',
+        localInstallUnavailable: 'No Manifold download',
         progressLabel: '{{title}}: {{phase}}',
       },
       downloads: {
