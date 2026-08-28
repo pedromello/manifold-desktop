@@ -32,12 +32,24 @@ type StoreDisplayPrice = {
   symbol: string;
 };
 
+type PurchaseMode = 'PLATFORM' | 'STEAM_ONLY' | 'UNAVAILABLE';
+
+type ExternalOffer = {
+  provider: 'STEAM';
+  amount: string | null;
+  originalAmount: string | null;
+  discountPercent: number | null;
+  currency: string | null;
+  url: string;
+  capturedAt: string | null;
+};
+
 type StoreGame = {
   id: string;
   slug: string;
   title: string;
   description: string;
-  price: string;
+  price: string | null;
   developerName: string;
   tags: string[];
   bannerUrl: string | null;
@@ -45,6 +57,10 @@ type StoreGame = {
   displayPrice: StoreDisplayPrice | null;
   discountLabel: string | null;
   reviewScore: string | null;
+  status: 'ACTIVE' | 'ONLY_DISPLAY' | 'INACTIVE' | 'PRIVATE';
+  ownershipStatus: 'UNCLAIMED' | 'CLAIMED';
+  purchaseMode: PurchaseMode;
+  externalOffer: ExternalOffer | null;
 };
 
 type StoreCatalog = {
@@ -59,15 +75,61 @@ function formatPrice(
   locale: string,
   free: string,
 ) {
+  if (game.purchaseMode === 'STEAM_ONLY') {
+    const offer = game.externalOffer;
+    if (offer?.amount === null || offer?.amount === undefined) return null;
+    if (!offer.currency) return offer.amount;
+    try {
+      return new Intl.NumberFormat(locale, {
+        style: 'currency',
+        currency: offer.currency,
+      }).format(Number(offer.amount));
+    } catch {
+      return `${offer.currency} ${offer.amount}`;
+    }
+  }
+  if (game.purchaseMode !== 'PLATFORM') return null;
   if (game.displayPrice) {
     if (Number(game.displayPrice.amount) === 0) return free;
     return `${game.displayPrice.symbol} ${game.displayPrice.amount}`;
   }
+  if (game.price === null) return null;
   if (Number(game.price) === 0) return free;
   return new Intl.NumberFormat(locale, {
     style: 'currency',
     currency: fallbackCurrency,
   }).format(Number(game.price));
+}
+
+function formatExternalOriginalPrice(game: StoreGame, locale: string) {
+  const offer = game.externalOffer;
+  if (
+    !offer?.originalAmount ||
+    offer.amount === null ||
+    offer.originalAmount === offer.amount ||
+    !offer.discountPercent
+  ) {
+    return null;
+  }
+  if (!offer.currency) return offer.originalAmount;
+  try {
+    return new Intl.NumberFormat(locale, {
+      style: 'currency',
+      currency: offer.currency,
+    }).format(Number(offer.originalAmount));
+  } catch {
+    return `${offer.currency} ${offer.originalAmount}`;
+  }
+}
+
+function discountLabel(game: StoreGame) {
+  if (game.purchaseMode === 'STEAM_ONLY') {
+    const percent = game.externalOffer?.discountPercent;
+    return percent && formatExternalOriginalPrice(game, 'en-US')
+      ? `-${percent}%`
+      : null;
+  }
+  return game.discountLabel;
 }
 
 function StorePage() {
@@ -101,6 +163,7 @@ function StorePage() {
   }, [requestVersion, submittedQuery, t]);
 
   const featured = catalog?.games[0] ?? null;
+  const featuredDiscountLabel = featured ? discountLabel(featured) : null;
   const games = useMemo(
     () => (featured ? (catalog?.games.slice(1) ?? []) : (catalog?.games ?? [])),
     [catalog, featured],
@@ -167,24 +230,51 @@ function StorePage() {
                   <img src={featured.bannerUrl} alt="" aria-hidden="true" />
                 )}
                 <div className="featured-overlay" />
+                {featuredDiscountLabel && (
+                  <span className="discount featured-discount">
+                    {featuredDiscountLabel}
+                  </span>
+                )}
                 <div className="featured-content">
                   <span className="pill">{t('store.featured')}</span>
                   <h2>{featured.title}</h2>
                   <p>{featured.description}</p>
                   <div className="featured-meta">
-                    <strong>
+                    <strong className="price-stack">
                       {formatPrice(
                         featured,
                         catalog.currency,
                         i18n.language,
                         t('common.free'),
+                      ) ||
+                        (featured.purchaseMode === 'STEAM_ONLY'
+                          ? t('store.steamPriceUnavailable')
+                          : t('store.catalogOnly'))}
+                      {formatExternalOriginalPrice(featured, i18n.language) && (
+                        <span className="price-original">
+                          {formatExternalOriginalPrice(featured, i18n.language)}
+                        </span>
                       )}
                     </strong>
                     <span>{featured.developerName}</span>
                   </div>
-                  <span className="availability-label">
-                    {t('store.available')}
-                  </span>
+                  {featured.purchaseMode === 'STEAM_ONLY' &&
+                  featured.externalOffer ? (
+                    <a
+                      className="availability-label"
+                      href={featured.externalOffer.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {t('store.viewOnSteam')}
+                    </a>
+                  ) : (
+                    <span className="availability-label">
+                      {featured.purchaseMode === 'PLATFORM'
+                        ? t('store.available')
+                        : t('store.catalogOnly')}
+                    </span>
+                  )}
                 </div>
               </section>
             )}
@@ -204,42 +294,70 @@ function StorePage() {
                 </span>
               </div>
               <div className="game-grid">
-                {games.map((game) => (
-                  <article className="game-card" key={game.id}>
-                    <div className="game-art">
-                      {game.bannerUrl || game.iconUrl ? (
-                        <img
-                          src={game.bannerUrl ?? game.iconUrl ?? ''}
-                          alt=""
-                        />
-                      ) : (
-                        <span>{game.title.slice(0, 1)}</span>
-                      )}
-                      {game.discountLabel && (
-                        <span className="discount">{game.discountLabel}</span>
-                      )}
-                    </div>
-                    <div className="game-card-body">
-                      <div>
-                        <h3>{game.title}</h3>
-                        <p>{game.developerName}</p>
-                      </div>
-                      <strong>
-                        {formatPrice(
-                          game,
-                          catalog.currency,
-                          i18n.language,
-                          t('common.free'),
+                {games.map((game) => {
+                  const gameDiscountLabel = discountLabel(game);
+                  const originalPrice = formatExternalOriginalPrice(
+                    game,
+                    i18n.language,
+                  );
+                  return (
+                    <article className="game-card" key={game.id}>
+                      <div className="game-art">
+                        {game.bannerUrl || game.iconUrl ? (
+                          <img
+                            src={game.bannerUrl ?? game.iconUrl ?? ''}
+                            alt=""
+                          />
+                        ) : (
+                          <span>{game.title.slice(0, 1)}</span>
                         )}
-                      </strong>
-                    </div>
-                    <div className="tag-row">
-                      {game.tags.slice(0, 3).map((tag) => (
-                        <span key={tag}>{tag}</span>
-                      ))}
-                    </div>
-                  </article>
-                ))}
+                        {gameDiscountLabel && (
+                          <span className="discount">{gameDiscountLabel}</span>
+                        )}
+                      </div>
+                      <div className="game-card-body">
+                        <div>
+                          <h3>{game.title}</h3>
+                          <p>{game.developerName}</p>
+                        </div>
+                        <div className="price-stack">
+                          {originalPrice && (
+                            <span className="price-original">
+                              {originalPrice}
+                            </span>
+                          )}
+                          <strong>
+                            {formatPrice(
+                              game,
+                              catalog.currency,
+                              i18n.language,
+                              t('common.free'),
+                            ) ||
+                              (game.purchaseMode === 'STEAM_ONLY'
+                                ? t('store.steamPriceUnavailable')
+                                : t('store.catalogOnly'))}
+                          </strong>
+                          {game.purchaseMode === 'STEAM_ONLY' &&
+                            game.externalOffer && (
+                              <a
+                                className="steam-link"
+                                href={game.externalOffer.url}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                {t('store.viewOnSteam')}
+                              </a>
+                            )}
+                        </div>
+                      </div>
+                      <div className="tag-row">
+                        {game.tags.slice(0, 3).map((tag) => (
+                          <span key={tag}>{tag}</span>
+                        ))}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             </section>
           </>

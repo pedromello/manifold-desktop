@@ -46,6 +46,8 @@ const ownedGame = {
   outlet: null,
   acquisitionLabel: 'Granted by Manifold',
   acquisitionType: 'GRANT',
+  status: 'ACTIVE',
+  purchaseMode: 'PLATFORM',
 };
 
 const installedGame = {
@@ -83,6 +85,9 @@ it('shows owned games with their acquisition outlet', async () => {
           logoUrl: null,
         },
         acquisitionLabel: 'Acquired via Cozy Outlet',
+        acquisitionType: 'OUTLET',
+        status: 'ACTIVE',
+        purchaseMode: 'PLATFORM',
       },
     ],
   });
@@ -143,6 +148,8 @@ it('offers repair instead of play when reconciliation finds a missing file', asy
             outlet: null,
             acquisitionLabel: 'Granted by Manifold',
             acquisitionType: 'GRANT',
+            status: 'ACTIVE',
+            purchaseMode: 'PLATFORM',
           },
         ],
       } as never;
@@ -413,4 +420,51 @@ it('localizes the uninstall confirmation in Brazilian Portuguese', async () => {
   expect(
     screen.getByText(/Sua compra, seu acesso ao jogo/),
   ).toBeInTheDocument();
+});
+
+it('does not offer local installation for a display-only Steam game', async () => {
+  vi.mocked(invoke).mockImplementation(async (command) => {
+    if (command === 'list_installations' || command === 'list_running_games') {
+      return [] as never;
+    }
+    if (command === 'list_library') {
+      return {
+        total: 1,
+        games: [
+          {
+            ...ownedGame,
+            id: 'steam-game',
+            libraryId: 'steam-library',
+            slug: 'steam-game',
+            title: 'Steam Game',
+            status: 'ONLY_DISPLAY',
+            purchaseMode: 'STEAM_ONLY',
+          },
+        ],
+      } as never;
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+
+  render(
+    <MemoryRouter>
+      <InstallationProvider>
+        <LibraryPage
+          user={{ id: 'user-1', username: 'pedro', email: 'pedro@example.com' }}
+          onAuthenticated={vi.fn()}
+          onSessionExpired={vi.fn()}
+        />
+      </InstallationProvider>
+    </MemoryRouter>,
+  );
+
+  expect(
+    await screen.findByRole('button', { name: 'No Manifold download' }),
+  ).toBeDisabled();
+  expect(
+    screen.queryByRole('button', { name: 'Install' }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: 'Uninstall' }),
+  ).not.toBeInTheDocument();
 });

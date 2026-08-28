@@ -172,7 +172,7 @@ struct GamesApiGame {
     slug: String,
     title: String,
     description: String,
-    price: String,
+    price: Option<String>,
     developer_name: String,
     #[serde(default)]
     tags: Vec<String>,
@@ -181,6 +181,21 @@ struct GamesApiGame {
     display_price: Option<GamesApiDisplayPrice>,
     discount_label: Option<String>,
     review_score: Option<String>,
+    status: Option<String>,
+    ownership_status: Option<String>,
+    purchase_mode: Option<String>,
+    external_offer: Option<GamesApiExternalOffer>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GamesApiExternalOffer {
+    provider: String,
+    amount: Option<String>,
+    original_amount: Option<String>,
+    discount_percent: Option<u32>,
+    currency: Option<String>,
+    url: String,
+    captured_at: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -220,7 +235,7 @@ struct StoreGame {
     slug: String,
     title: String,
     description: String,
-    price: String,
+    price: Option<String>,
     developer_name: String,
     tags: Vec<String>,
     banner_url: Option<String>,
@@ -228,6 +243,26 @@ struct StoreGame {
     display_price: Option<StoreDisplayPrice>,
     discount_label: Option<String>,
     review_score: Option<String>,
+    #[serde(rename = "status")]
+    status: String,
+    #[serde(rename = "ownershipStatus")]
+    ownership_status: String,
+    #[serde(rename = "purchaseMode")]
+    purchase_mode: String,
+    #[serde(rename = "externalOffer")]
+    external_offer: Option<StoreExternalOffer>,
+}
+
+#[derive(Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoreExternalOffer {
+    provider: String,
+    amount: Option<String>,
+    original_amount: Option<String>,
+    discount_percent: Option<u32>,
+    currency: Option<String>,
+    url: String,
+    captured_at: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -267,6 +302,8 @@ struct LibraryApiGame {
     title: String,
     description: String,
     developer_name: String,
+    status: Option<String>,
+    purchase_mode: Option<String>,
     #[serde(default)]
     media: GamesApiMedia,
 }
@@ -321,6 +358,8 @@ struct LibraryGame {
     outlet: Option<LibraryOutlet>,
     acquisition_label: String,
     acquisition_type: String,
+    status: String,
+    purchase_mode: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -338,24 +377,36 @@ impl From<GamesApiResponse> for StoreCatalog {
             games: response
                 .games
                 .into_iter()
-                .map(|game| StoreGame {
-                    id: game.id,
-                    slug: game.slug,
-                    title: game.title,
-                    description: game.description,
-                    price: game.price,
-                    developer_name: game.developer_name,
-                    tags: game.tags,
-                    banner_url: game.media.banner,
-                    icon_url: game.media.icon,
-                    display_price: game.display_price.map(|price| StoreDisplayPrice {
-                        amount: price.amount,
-                        base_amount: price.base_amount,
-                        currency: price.currency,
-                        symbol: price.symbol,
-                    }),
-                    discount_label: game.discount_label,
-                    review_score: game.review_score,
+                .map(|game| {
+                    let status = normalized_game_status(game.status.as_deref());
+                    let purchase_mode =
+                        normalized_purchase_mode(game.purchase_mode.as_deref(), &status);
+                    StoreGame {
+                        id: game.id,
+                        slug: game.slug,
+                        title: game.title,
+                        description: game.description,
+                        price: game.price,
+                        developer_name: game.developer_name,
+                        tags: game.tags,
+                        banner_url: game.media.banner,
+                        icon_url: game.media.icon,
+                        display_price: game.display_price.map(|price| StoreDisplayPrice {
+                            amount: price.amount,
+                            base_amount: price.base_amount,
+                            currency: price.currency,
+                            symbol: price.symbol,
+                        }),
+                        discount_label: game.discount_label,
+                        review_score: game.review_score,
+                        status,
+                        ownership_status: match game.ownership_status.as_deref() {
+                            Some("UNCLAIMED") => "UNCLAIMED".into(),
+                            _ => "CLAIMED".into(),
+                        },
+                        purchase_mode,
+                        external_offer: game.external_offer.and_then(StoreExternalOffer::from_api),
+                    }
                 })
                 .collect(),
             pagination: StorePagination {
@@ -443,6 +494,48 @@ fn store_games_url(query: Option<&str>) -> Result<url::Url, String> {
         }
     }
     Ok(url)
+}
+
+fn normalized_game_status(status: Option<&str>) -> String {
+    match status {
+        Some("ONLY_DISPLAY") => "ONLY_DISPLAY",
+        Some("INACTIVE") => "INACTIVE",
+        Some("PRIVATE") => "PRIVATE",
+        _ => "ACTIVE",
+    }
+    .into()
+}
+
+fn normalized_purchase_mode(mode: Option<&str>, status: &str) -> String {
+    match mode {
+        Some("STEAM_ONLY") => "STEAM_ONLY",
+        Some("UNAVAILABLE") => "UNAVAILABLE",
+        Some("PLATFORM") => "PLATFORM",
+        _ if status == "ACTIVE" => "PLATFORM",
+        _ => "UNAVAILABLE",
+    }
+    .into()
+}
+
+impl StoreExternalOffer {
+    fn from_api(offer: GamesApiExternalOffer) -> Option<Self> {
+        let url = url::Url::parse(&offer.url).ok()?;
+        if url.scheme() != "https" || url.host_str() != Some("store.steampowered.com") {
+            return None;
+        }
+        if offer.provider != "STEAM" {
+            return None;
+        }
+        Some(Self {
+            provider: offer.provider,
+            amount: offer.amount,
+            original_amount: offer.original_amount,
+            discount_percent: offer.discount_percent,
+            currency: offer.currency,
+            url: offer.url,
+            captured_at: offer.captured_at,
+        })
+    }
 }
 
 fn install_manifest_url(release_id: &str, artifact_id: &str) -> Result<url::Url, String> {
@@ -722,6 +815,11 @@ async fn list_library(state: tauri::State<'_, ApiState>) -> Result<LibraryCatalo
                 outlet,
                 acquisition_label,
                 acquisition_type,
+                status: normalized_game_status(item.game.status.as_deref()),
+                purchase_mode: normalized_purchase_mode(
+                    item.game.purchase_mode.as_deref(),
+                    &normalized_game_status(item.game.status.as_deref()),
+                ),
             }
         })
         .collect::<Vec<_>>();
@@ -911,6 +1009,45 @@ mod tests {
                 .unwrap()
                 .as_str(),
             "https://staging.example.com/api/v1/"
+        );
+    }
+
+    #[test]
+    fn accepts_display_only_games_with_null_local_prices_and_external_offers() {
+        let response: GamesApiResponse = serde_json::from_value(serde_json::json!({
+            "games": [{
+                "id": "game-1",
+                "slug": "steam-game",
+                "title": "Steam Game",
+                "description": "Catalog contribution",
+                "price": null,
+                "developer_name": "Unclaimed",
+                "status": "ONLY_DISPLAY",
+                "ownership_status": "UNCLAIMED",
+                "purchase_mode": "STEAM_ONLY",
+                "external_offer": {
+                    "provider": "STEAM",
+                    "amount": "13.39",
+                    "original_amount": "19.99",
+                    "discount_percent": 33,
+                    "currency": "USD",
+                    "url": "https://store.steampowered.com/app/400/",
+                    "captured_at": "2026-08-28T12:00:00.000Z"
+                }
+            }],
+            "pagination": { "page": 1, "limit": 12, "total": 1, "pages": 1 },
+            "currency": "BRL"
+        }))
+        .unwrap();
+
+        let catalog = StoreCatalog::from(response);
+        let game = &catalog.games[0];
+        assert_eq!(game.price, None);
+        assert_eq!(game.status, "ONLY_DISPLAY");
+        assert_eq!(game.purchase_mode, "STEAM_ONLY");
+        assert_eq!(
+            game.external_offer.as_ref().unwrap().discount_percent,
+            Some(33)
         );
     }
 }

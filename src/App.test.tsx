@@ -18,6 +18,10 @@ const catalog = {
       tags: ['Cozy', 'Management'],
       bannerUrl: 'https://example.com/banner.jpg',
       iconUrl: null,
+      status: 'ACTIVE',
+      ownershipStatus: 'CLAIMED',
+      purchaseMode: 'PLATFORM',
+      externalOffer: null,
       displayPrice: {
         amount: '20.21',
         baseAmount: null,
@@ -105,4 +109,96 @@ it('reveals Studio only after an authenticated publisher has a studio', async ()
   expect(
     await screen.findByRole('link', { name: 'Studio' }),
   ).toBeInTheDocument();
+});
+
+it('renders a Steam-only promotion without presenting it as free', async () => {
+  vi.mocked(invoke).mockImplementation((command) => {
+    if (command === 'list_store_games') {
+      return Promise.resolve({
+        ...catalog,
+        games: [
+          {
+            ...catalog.games[0],
+            id: 'steam-game',
+            slug: 'steam-game',
+            title: 'Steam Game',
+            price: null,
+            displayPrice: null,
+            status: 'ONLY_DISPLAY',
+            ownershipStatus: 'UNCLAIMED',
+            purchaseMode: 'STEAM_ONLY',
+            externalOffer: {
+              amount: '13.39',
+              originalAmount: '19.99',
+              currency: 'USD',
+              discountPercent: 33,
+              url: 'https://store.steampowered.com/app/400',
+              capturedAt: '2026-08-20T12:00:00.000Z',
+            },
+          },
+        ],
+      });
+    }
+    if (command === 'current_user') return Promise.resolve(null);
+    return Promise.resolve({});
+  });
+
+  render(
+    <MemoryRouter>
+      <App />
+    </MemoryRouter>,
+  );
+
+  expect(await screen.findByText('-33%')).toBeInTheDocument();
+  expect(screen.getByText('$13.39')).toBeInTheDocument();
+  expect(screen.getByText('$19.99')).toBeInTheDocument();
+  expect(screen.queryByText('Free')).not.toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'View on Steam' })).toHaveAttribute(
+    'href',
+    'https://store.steampowered.com/app/400',
+  );
+});
+
+it('treats an absent Steam price as unavailable, never free', async () => {
+  vi.mocked(invoke).mockImplementation((command) => {
+    if (command === 'list_store_games') {
+      return Promise.resolve({
+        ...catalog,
+        games: [
+          {
+            ...catalog.games[0],
+            id: 'steam-unpriced',
+            slug: 'steam-unpriced',
+            title: 'Unpriced Steam Game',
+            price: null,
+            displayPrice: null,
+            status: 'ONLY_DISPLAY',
+            ownershipStatus: 'UNCLAIMED',
+            purchaseMode: 'STEAM_ONLY',
+            externalOffer: {
+              amount: null,
+              originalAmount: null,
+              currency: null,
+              discountPercent: null,
+              url: 'https://store.steampowered.com/app/401',
+              capturedAt: '2026-08-20T12:00:00.000Z',
+            },
+          },
+        ],
+      });
+    }
+    if (command === 'current_user') return Promise.resolve(null);
+    return Promise.resolve({});
+  });
+
+  render(
+    <MemoryRouter>
+      <App />
+    </MemoryRouter>,
+  );
+
+  expect(
+    await screen.findByText('Steam price unavailable'),
+  ).toBeInTheDocument();
+  expect(screen.queryByText('Free')).not.toBeInTheDocument();
 });

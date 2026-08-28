@@ -30,6 +30,8 @@ export type LibraryGame = {
   outlet: LibraryOutlet | null;
   acquisitionLabel: string;
   acquisitionType?: 'OUTLET' | 'MANIFOLD_STORE' | 'GRANT';
+  status: 'ACTIVE' | 'ONLY_DISPLAY' | 'INACTIVE' | 'PRIVATE';
+  purchaseMode: 'PLATFORM' | 'STEAM_ONLY' | 'UNAVAILABLE';
 };
 
 type LibraryCatalog = { games: LibraryGame[]; total: number };
@@ -173,6 +175,9 @@ export function LibraryPage({
 
   useEffect(() => {
     const installedSlugs = (catalog?.games ?? [])
+      .filter(
+        (game) => game.status === 'ACTIVE' && game.purchaseMode === 'PLATFORM',
+      )
       .map((game) => game.slug)
       .filter((slug) => installed[slug]?.status === 'INSTALLED');
     void checkForUpdates(installedSlugs);
@@ -183,6 +188,7 @@ export function LibraryPage({
   }
 
   async function handleGameAction(game: LibraryGame) {
+    if (game.status !== 'ACTIVE' || game.purchaseMode !== 'PLATFORM') return;
     const installation = installed[game.slug];
     const needsRepair = installation?.status === 'REPAIR_NEEDED';
     const updateVersion = availableUpdates[game.slug];
@@ -304,6 +310,8 @@ export function LibraryPage({
                 const updateVersion = availableUpdates[game.slug];
                 const isLaunching = launchingSlug === game.slug;
                 const isPlaying = Boolean(playing[game.slug]);
+                const isLocallyInstallable =
+                  game.status === 'ACTIVE' && game.purchaseMode === 'PLATFORM';
                 const progressLabel = job ? t(`downloads.${job.phase}`) : null;
                 const installFeedbackId = `install-feedback-${game.slug}`;
                 const launchFeedbackId = `launch-feedback-${game.slug}`;
@@ -398,26 +406,33 @@ export function LibraryPage({
                             .filter(Boolean)
                             .join(' ') || undefined
                         }
-                        disabled={isBusy || isLaunching || isPlaying}
+                        disabled={
+                          isBusy ||
+                          isLaunching ||
+                          isPlaying ||
+                          !isLocallyInstallable
+                        }
                         onClick={() => void handleGameAction(game)}
                       >
-                        {isBusy
-                          ? progressLabel
-                          : isPlaying
-                            ? t('library.playing')
-                            : isLaunching
-                              ? t('library.launching')
-                              : needsRepair
-                                ? t('library.repair')
-                                : updateVersion
-                                  ? t('library.update')
-                                  : installation
-                                    ? t('library.play')
-                                    : job?.phase === 'failed'
-                                      ? t('library.retryInstall')
-                                      : t('library.install')}
+                        {!isLocallyInstallable
+                          ? t('library.localInstallUnavailable')
+                          : isBusy
+                            ? progressLabel
+                            : isPlaying
+                              ? t('library.playing')
+                              : isLaunching
+                                ? t('library.launching')
+                                : needsRepair
+                                  ? t('library.repair')
+                                  : updateVersion
+                                    ? t('library.update')
+                                    : installation
+                                      ? t('library.play')
+                                      : job?.phase === 'failed'
+                                        ? t('library.retryInstall')
+                                        : t('library.install')}
                       </button>
-                      {installation && (
+                      {installation && isLocallyInstallable && (
                         <button
                           className="uninstall-action"
                           disabled={isBusy || uninstallingSlug === game.slug}
