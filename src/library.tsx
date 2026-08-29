@@ -86,6 +86,7 @@ export function LibraryPage({
     playing,
     progress,
     uninstall,
+    update,
   } = useInstallations();
   const [catalog, setCatalog] = useState<LibraryCatalog | null>(null);
   const [query, setQuery] = useState('');
@@ -191,10 +192,10 @@ export function LibraryPage({
     if (game.status !== 'ACTIVE' || game.purchaseMode !== 'PLATFORM') return;
     const installation = installed[game.slug];
     const needsRepair = installation?.status === 'REPAIR_NEEDED';
-    const updateVersion = availableUpdates[game.slug];
+    const updateInfo = availableUpdates[game.slug];
     if (playing[game.slug]) return;
     setLaunchErrors((current) => ({ ...current, [game.slug]: false }));
-    if (installation && !needsRepair && !updateVersion) {
+    if (installation && !needsRepair && !updateInfo) {
       setLaunchingSlug(game.slug);
       try {
         await launch(game.slug);
@@ -205,7 +206,11 @@ export function LibraryPage({
       }
       return;
     }
-    await install(game.slug, game.title);
+    if (installation && updateInfo && !needsRepair) {
+      await update(game.slug, game.title);
+    } else {
+      await install(game.slug, game.title);
+    }
   }
 
   async function confirmUninstall() {
@@ -303,11 +308,16 @@ export function LibraryPage({
                     'verifying',
                     'extracting',
                     'installing',
+                    'preparing_update',
+                    'downloading_update',
+                    'applying_update',
+                    'verifying_update',
+                    'full_fallback',
                   ].includes(job.phase),
                 );
                 const installation = installed[game.slug];
                 const needsRepair = installation?.status === 'REPAIR_NEEDED';
-                const updateVersion = availableUpdates[game.slug];
+                const updateInfo = availableUpdates[game.slug];
                 const isLaunching = launchingSlug === game.slug;
                 const isPlaying = Boolean(playing[game.slug]);
                 const isLocallyInstallable =
@@ -373,6 +383,29 @@ export function LibraryPage({
                           <strong>v{installation.version}</strong>
                         ) : null}
                       </div>
+                      {updateInfo && !isBusy && (
+                        <p className="update-summary">
+                          {t('library.updateAvailable', {
+                            version: updateInfo.targetVersion,
+                          })}
+                          {updateInfo.patchSizeBytes && (
+                            <span>
+                              {t('library.updatePatchDetails', {
+                                size: new Intl.NumberFormat(i18n.language, {
+                                  style: 'unit',
+                                  unit: 'megabyte',
+                                  maximumFractionDigits: 1,
+                                }).format(
+                                  Number(updateInfo.patchSizeBytes) /
+                                    1024 /
+                                    1024,
+                                ),
+                                savings: updateInfo.savingsPercent ?? 0,
+                              })}
+                            </span>
+                          )}
+                        </p>
+                      )}
                       {isBusy && job && (
                         <div
                           className="install-progress"
@@ -424,7 +457,7 @@ export function LibraryPage({
                                 ? t('library.launching')
                                 : needsRepair
                                   ? t('library.repair')
-                                  : updateVersion
+                                  : updateInfo
                                     ? t('library.update')
                                     : installation
                                       ? t('library.play')

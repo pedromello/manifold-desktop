@@ -1,7 +1,6 @@
-import {
-  desktopErrorCodeSchema,
-  type DesktopErrorCode,
-} from './contracts/desktop-v1';
+import { desktopErrorCodeSchema } from './contracts/desktop-v1';
+
+type DesktopErrorCode = (typeof desktopErrorCodeSchema.options)[number];
 
 export type DistributionErrorCode =
   | DesktopErrorCode

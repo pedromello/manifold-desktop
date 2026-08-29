@@ -16,6 +16,9 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
+pub(crate) mod updater;
+pub use updater::{UpdateExecutionPlan, UpdatePlan};
+
 const REGISTRY_FILE: &str = "installations.json";
 const PREFERENCES_FILE: &str = "installation-preferences.json";
 const INSTALLATION_LOG_FILE: &str = "installation.log";
@@ -1004,6 +1007,7 @@ async fn download_artifact(
     title: &str,
     plan: &DistributionPlan,
     cancellation: &AtomicBool,
+    phase: &str,
 ) -> Result<PathBuf, String> {
     let total = plan
         .download
@@ -1028,7 +1032,7 @@ async fn download_artifact(
         plan.download.etag.as_deref(),
         cancellation,
         |downloaded| {
-            emit_progress(app, plan, title, "downloading", downloaded, total, None);
+            emit_progress(app, plan, title, phase, downloaded, total, None);
         },
     )
     .await?;
@@ -1404,10 +1408,25 @@ fn activate_staged_installation(
         }
         return Err(format!("could not activate installation: {error}"));
     }
+    Ok(())
+}
+
+fn finalize_activation_backup(backup: &Path) -> Result<(), String> {
     if backup.exists() {
-        let _ = fs::remove_dir_all(backup);
+        fs::remove_dir_all(backup)
+            .map_err(|error| format!("could not finalize installation backup: {error}"))?;
     }
     Ok(())
+}
+
+fn rollback_activation(destination: &Path, backup: &Path) {
+    if !backup.exists() {
+        return;
+    }
+    if destination.exists() {
+        let _ = fs::remove_dir_all(destination);
+    }
+    let _ = fs::rename(backup, destination);
 }
 
 fn install_archive_at_with_callback<F>(
@@ -1470,10 +1489,17 @@ where
         working_directory: plan.manifest.working_directory.clone(),
         environment: plan.manifest.environment.clone(),
     };
-    let mut registry = read_registry_at(registry_file)?;
-    registry.retain(|item| item.game_slug != installed.game_slug);
-    registry.push(installed.clone());
-    write_registry_at(registry_file, &registry)?;
+    let registry_result = (|| {
+        let mut registry = read_registry_at(registry_file)?;
+        registry.retain(|item| item.game_slug != installed.game_slug);
+        registry.push(installed.clone());
+        write_registry_at(registry_file, &registry)
+    })();
+    if let Err(error) = registry_result {
+        rollback_activation(&destination, &backup);
+        return Err(error);
+    }
+    finalize_activation_backup(&backup)?;
     Ok(installed)
 }
 
@@ -1520,7 +1546,7 @@ async fn install_game_inner(
 ) -> Result<InstalledGame, String> {
     validate_plan(plan)?;
     let total = plan.download.total_size_bytes.parse::<u64>().unwrap_or(0);
-    let archive = download_artifact(app, title, plan, cancellation).await?;
+    let archive = download_artifact(app, title, plan, cancellation, "downloading").await?;
     emit_progress(app, plan, title, "verifying", total, total, None);
     let archive_for_hash = archive.clone();
     let expected_hash = plan.download.sha256.clone();
@@ -1619,6 +1645,10 @@ pub fn cancel_installation(
 
 #[tauri::command]
 pub fn list_installations(app: AppHandle) -> Result<Vec<InstalledGame>, String> {
+    updater::recover_pending_updates_at(
+        &registry_path(&app)?,
+        &updater::pending_updates_path(&app)?,
+    )?;
     recover_pending_uninstalls_at(
         &registry_path(&app)?,
         &pending_uninstalls_path(&app)?,

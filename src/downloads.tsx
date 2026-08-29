@@ -11,6 +11,11 @@ const activePhases: InstallationPhase[] = [
   'verifying',
   'extracting',
   'installing',
+  'preparing_update',
+  'downloading_update',
+  'applying_update',
+  'verifying_update',
+  'full_fallback',
 ];
 
 function humanBytes(value: number, locale: string) {

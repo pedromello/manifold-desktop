@@ -158,7 +158,7 @@ it('cancels an active upload and returns to the retryable review state', async (
   seedManifestDraft();
   const publishing = adapter();
   publishing.publish = vi.fn(
-    async (releaseId, _archivePath, _manifest, onProgress) => {
+    async (_gameSlug, releaseId, _archivePath, _manifest, onProgress) => {
       onProgress({
         releaseId,
         phase: 'uploading',

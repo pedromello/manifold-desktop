@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+mod butler;
 mod installer;
 pub mod publisher;
 
@@ -18,7 +19,7 @@ const LIBRARY_PAGE_SIZE: u8 = 100;
 const CREDENTIAL_SERVICE: &str = "com.manifoldpowered.desktop";
 const CREDENTIAL_USER: &str = "session";
 
-struct ApiState {
+pub(crate) struct ApiState {
     client: Mutex<Client>,
 }
 
@@ -29,7 +30,7 @@ impl ApiState {
         })
     }
 
-    fn client(&self) -> Result<Client, String> {
+    pub(crate) fn client(&self) -> Result<Client, String> {
         self.client
             .lock()
             .map(|client| client.clone())
@@ -913,6 +914,152 @@ async fn resolve_install_plan(
     })
 }
 
+fn validate_api_identifier(value: &str) -> Result<(), DistributionError> {
+    let valid = value.len() == 36
+        && value.chars().enumerate().all(|(index, character)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                character == '-'
+            } else {
+                character.is_ascii_hexdigit()
+            }
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(DistributionError::invalid_request("invalid API identifier"))
+    }
+}
+
+fn update_plan_url(
+    game_slug: &str,
+    source_release_id: &str,
+) -> Result<url::Url, DistributionError> {
+    installer::validate_game_slug(game_slug).map_err(DistributionError::invalid_request)?;
+    validate_api_identifier(source_release_id)?;
+    let (platform, architecture) =
+        distribution_target().map_err(DistributionError::service_unavailable)?;
+    let mut url = production_api_url(&format!("games/{game_slug}/updates/latest"))
+        .map_err(DistributionError::service_unavailable)?;
+    url.query_pairs_mut()
+        .append_pair("source_release_id", source_release_id)
+        .append_pair("platform", platform)
+        .append_pair("arch", architecture);
+    Ok(url)
+}
+
+#[tauri::command]
+async fn resolve_update_plan(
+    state: tauri::State<'_, ApiState>,
+    game_slug: String,
+    source_release_id: String,
+) -> Result<installer::UpdatePlan, DistributionError> {
+    let client = state
+        .client()
+        .map_err(DistributionError::service_unavailable)?;
+    let url = update_plan_url(&game_slug, &source_release_id)?;
+    let response = send(&client, client.get(url))
+        .await
+        .map_err(DistributionError::service_unavailable)?;
+    distribution_api_json(response).await
+}
+
+#[tauri::command]
+async fn prepare_update_plan(
+    state: tauri::State<'_, ApiState>,
+    update: installer::UpdatePlan,
+) -> Result<installer::UpdateExecutionPlan, DistributionError> {
+    let client = state
+        .client()
+        .map_err(DistributionError::service_unavailable)?;
+    let (source_id, target_id, target_artifact_id, fallback_artifact_id, patch_id) = match &update {
+        installer::UpdatePlan::Patch {
+            source,
+            target,
+            fallback_artifact_id,
+            patch,
+        } => (
+            &source.id,
+            &target.id,
+            &target.artifact_id,
+            fallback_artifact_id,
+            Some(&patch.id),
+        ),
+        installer::UpdatePlan::Full {
+            source,
+            target,
+            fallback_artifact_id,
+            ..
+        } => (
+            &source.id,
+            &target.id,
+            &target.artifact_id,
+            fallback_artifact_id,
+            None,
+        ),
+    };
+    for identifier in [
+        source_id,
+        target_id,
+        target_artifact_id,
+        fallback_artifact_id,
+    ] {
+        validate_api_identifier(identifier)?;
+    }
+    if let Some(identifier) = patch_id {
+        validate_api_identifier(identifier)?;
+    }
+    let target = match &update {
+        installer::UpdatePlan::Patch { target, .. }
+        | installer::UpdatePlan::Full { target, .. } => target,
+    };
+    let manifest_url = install_manifest_url(&target.id, &target.artifact_id)
+        .map_err(DistributionError::service_unavailable)?;
+    let manifest = distribution_api_json(
+        send(&client, client.get(manifest_url))
+            .await
+            .map_err(DistributionError::service_unavailable)?,
+    )
+    .await?;
+    let patch_downloads = if let installer::UpdatePlan::Patch { patch, .. } = &update {
+        let url = production_api_url(&format!("patches/{}/download", patch.id))
+            .map_err(DistributionError::service_unavailable)?;
+        Some(
+            distribution_api_json(
+                send(&client, client.post(url))
+                    .await
+                    .map_err(DistributionError::service_unavailable)?,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let fallback_artifact_id = match &update {
+        installer::UpdatePlan::Patch {
+            fallback_artifact_id,
+            ..
+        }
+        | installer::UpdatePlan::Full {
+            fallback_artifact_id,
+            ..
+        } => fallback_artifact_id,
+    };
+    let fallback_url = production_api_url(&format!("artifacts/{fallback_artifact_id}/download"))
+        .map_err(DistributionError::service_unavailable)?;
+    let fallback_download = distribution_api_json(
+        send(&client, client.post(fallback_url))
+            .await
+            .map_err(DistributionError::service_unavailable)?,
+    )
+    .await?;
+    Ok(installer::UpdateExecutionPlan {
+        update,
+        manifest,
+        patch_downloads,
+        fallback_download,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let api_state = ApiState::new().expect("failed to initialize the Manifold API client");
@@ -932,6 +1079,8 @@ pub fn run() {
             list_library,
             resolve_latest_release,
             resolve_install_plan,
+            resolve_update_plan,
+            prepare_update_plan,
             publisher::list_publisher_studios,
             publisher::list_studio_games,
             publisher::list_game_releases,
@@ -941,6 +1090,7 @@ pub fn run() {
             publisher::publish_release,
             publisher::cancel_publish_upload,
             installer::install_game,
+            installer::updater::update_game,
             installer::cancel_installation,
             installer::list_installations,
             installer::launch_game,
@@ -957,6 +1107,20 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_url_uses_the_frozen_wire_query_names() {
+        let source = "11111111-1111-4111-8111-111111111111";
+        let url = update_plan_url("capyvarias", source).unwrap();
+        let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        assert_eq!(
+            query.get("source_release_id").map(String::as_str),
+            Some(source)
+        );
+        assert!(query.contains_key("platform"));
+        assert!(query.contains_key("arch"));
+        assert!(!query.contains_key("installed_release_id"));
+    }
 
     #[test]
     fn accepts_known_environment() {

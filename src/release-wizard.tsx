@@ -16,6 +16,7 @@ import {
   publisherAdapter,
   PublisherAdapter,
   PublisherGame,
+  PublisherProgress,
   PublisherStudio,
   storePublisherRelease,
   StoredPublisherRelease,
@@ -33,6 +34,9 @@ const phaseStep = {
   file: 1,
   preflight: 2,
   manifest: 3,
+  preparing_patch: 4,
+  validating_patch: 4,
+  uploading_patch: 4,
   uploading: 4,
   verifying: 5,
   success: 6,
@@ -230,6 +234,9 @@ function ReleaseArtifactWizard({
   const [uploadedBytes, setUploadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
   const [attempt, setAttempt] = useState(1);
+  const [publisherPhase, setPublisherPhase] =
+    useState<PublisherProgress['phase']>('uploading');
+  const [temporaryBytesRequired, setTemporaryBytesRequired] = useState(0);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   const update = useCallback(
@@ -377,6 +384,8 @@ function ReleaseArtifactWizard({
     setBusy(true);
     setError(null);
     setUploadedBytes(0);
+    setPublisherPhase('preparing_patch');
+    setTemporaryBytesRequired(0);
     setTotalBytes(Number(currentInspection?.compressedSizeBytes ?? 0));
     update((value) => ({
       ...value,
@@ -385,6 +394,7 @@ function ReleaseArtifactWizard({
     }));
     try {
       const confirmation = await adapter.publish(
+        stored.gameSlug,
         release.id,
         archivePath,
         manifest,
@@ -392,6 +402,8 @@ function ReleaseArtifactWizard({
           setUploadedBytes(progress.uploadedBytes);
           setTotalBytes(progress.totalBytes);
           setAttempt(progress.attempt);
+          setPublisherPhase(progress.phase);
+          setTemporaryBytesRequired(progress.temporaryBytesRequired ?? 0);
           if (progress.phase === 'verifying') {
             update((value) => ({ ...value, phase: 'verifying' }));
           }
@@ -648,17 +660,40 @@ function ReleaseArtifactWizard({
                   <h2 ref={headingRef} tabIndex={-1}>
                     {stored.phase === 'verifying'
                       ? t('publisher.verifyingTitle')
-                      : t('publisher.uploadTitle')}
+                      : publisherPhase === 'preparing_patch'
+                        ? t('publisher.preparingPatchTitle')
+                        : publisherPhase === 'validating_patch'
+                          ? t('publisher.validatingPatchTitle')
+                          : publisherPhase === 'uploading_patch'
+                            ? t('publisher.uploadingPatchTitle')
+                            : t('publisher.uploadTitle')}
                   </h2>
                   <p>
                     {stored.phase === 'verifying'
                       ? t('publisher.verifyingHelp')
-                      : t('publisher.uploadHelp')}
+                      : publisherPhase === 'preparing_patch'
+                        ? t('publisher.preparingPatchHelp')
+                        : publisherPhase === 'validating_patch'
+                          ? t('publisher.validatingPatchHelp')
+                          : publisherPhase === 'uploading_patch'
+                            ? t('publisher.uploadingPatchHelp')
+                            : t('publisher.uploadHelp')}
                   </p>
                 </div>
               </div>
               {stored.phase === 'uploading' ? (
                 <>
+                  {temporaryBytesRequired > 0 &&
+                    publisherPhase === 'preparing_patch' && (
+                      <p className="publisher-space-note">
+                        {t('publisher.temporarySpace', {
+                          size: humanBytes(
+                            String(temporaryBytesRequired),
+                            i18n.language,
+                          ),
+                        })}
+                      </p>
+                    )}
                   <div className="upload-meter-row">
                     <span>{inspection?.fileName}</span>
                     <strong>{percent}%</strong>

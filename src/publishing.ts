@@ -81,6 +81,9 @@ export type PublisherProgress = {
   releaseId: string;
   phase:
     | 'analyzing'
+    | 'preparing_patch'
+    | 'validating_patch'
+    | 'uploading_patch'
     | 'uploading'
     | 'verifying'
     | 'published'
@@ -89,6 +92,7 @@ export type PublisherProgress = {
   uploadedBytes: number;
   totalBytes: number;
   attempt: number;
+  temporaryBytesRequired?: number;
 };
 
 export type PublishConfirmation = {
@@ -136,6 +140,7 @@ export interface PublisherAdapter {
   selectArchive(): Promise<string | null>;
   inspectArchive(archivePath: string): Promise<ArchiveInspection>;
   publish(
+    gameSlug: string,
     releaseId: string,
     archivePath: string,
     manifest: PublishManifest,
@@ -186,7 +191,7 @@ export const nativePublisherAdapter: PublisherAdapter = {
       archivePath,
     });
   },
-  async publish(releaseId, archivePath, manifest, onProgress) {
+  async publish(gameSlug, releaseId, archivePath, manifest, onProgress) {
     const unlisten = await listen<PublisherProgress>(
       'publisher-progress',
       ({ payload }) => {
@@ -196,6 +201,7 @@ export const nativePublisherAdapter: PublisherAdapter = {
     try {
       return await invoke<PublishConfirmation>('publish_release', {
         releaseId,
+        gameSlug,
         archivePath,
         manifest,
       });
@@ -320,7 +326,7 @@ export const fixturePublisherAdapter: PublisherAdapter = {
       suggestedWorkingDirectory: "Peggy's Post",
     };
   },
-  async publish(releaseId, _archivePath, _manifest, onProgress) {
+  async publish(_gameSlug, releaseId, _archivePath, _manifest, onProgress) {
     const totalBytes = 71059858;
     for (const uploadedBytes of [8_000_000, 32_000_000, totalBytes]) {
       onProgress({
@@ -380,6 +386,9 @@ export type StoredPublisherRelease = {
     | 'file'
     | 'preflight'
     | 'manifest'
+    | 'preparing_patch'
+    | 'validating_patch'
+    | 'uploading_patch'
     | 'uploading'
     | 'verifying'
     | 'success';
@@ -396,6 +405,9 @@ export function loadStoredPublisherReleases(): StoredPublisherRelease[] {
     if (!Array.isArray(values)) return [];
     return values.map((value) =>
       value.phase === 'preflight' ||
+      value.phase === 'preparing_patch' ||
+      value.phase === 'validating_patch' ||
+      value.phase === 'uploading_patch' ||
       value.phase === 'uploading' ||
       value.phase === 'verifying'
         ? { ...value, phase: 'manifest' as const }

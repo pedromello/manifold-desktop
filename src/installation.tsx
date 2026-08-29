@@ -30,6 +30,11 @@ export type InstallationPhase =
   | 'verifying'
   | 'extracting'
   | 'installing'
+  | 'preparing_update'
+  | 'downloading_update'
+  | 'applying_update'
+  | 'verifying_update'
+  | 'full_fallback'
   | 'installed'
   | 'failed'
   | 'cancelled';
@@ -51,6 +56,15 @@ export type InstallationProgress = {
 type GameProcessState = {
   gameSlug: string;
   running: boolean;
+};
+
+export type UpdateAvailability = {
+  targetVersion: string;
+  targetReleaseId: string;
+  strategy: 'PATCH' | 'FULL';
+  patchSizeBytes?: string;
+  fullSizeBytes: string;
+  savingsPercent?: number;
 };
 
 export type InstalledGame = {
@@ -112,8 +126,9 @@ type InstallationContextValue = {
   progress: Record<string, InstallationProgress>;
   installed: Record<string, InstalledGame>;
   playing: Record<string, boolean>;
-  availableUpdates: Record<string, string>;
+  availableUpdates: Record<string, UpdateAvailability>;
   install: (gameSlug: string, title: string) => Promise<void>;
+  update: (gameSlug: string, title: string) => Promise<void>;
   cancel: (gameSlug: string) => Promise<void>;
   launch: (gameSlug: string) => Promise<void>;
   uninstall: (gameSlug: string) => Promise<void>;
@@ -146,7 +161,7 @@ export function InstallationProvider({
   const [installed, setInstalled] = useState<Record<string, InstalledGame>>({});
   const [playing, setPlaying] = useState<Record<string, boolean>>({});
   const [availableUpdates, setAvailableUpdates] = useState<
-    Record<string, string>
+    Record<string, UpdateAvailability>
   >({});
   const downloadMetrics = useRef<Record<string, DownloadMetricState>>({});
 
@@ -279,6 +294,81 @@ export function InstallationProvider({
     [adapter, refresh],
   );
 
+  const update = useCallback(
+    async (gameSlug: string, title: string) => {
+      const current = installed[gameSlug];
+      if (!current) return install(gameSlug, title);
+      delete downloadMetrics.current[gameSlug];
+      setProgress((values) => ({
+        ...values,
+        [gameSlug]: {
+          gameSlug,
+          title,
+          phase: 'preparing_update',
+          downloadedBytes: 0,
+          totalBytes: 0,
+          version: availableUpdates[gameSlug]?.targetVersion ?? null,
+          error: null,
+        },
+      }));
+      try {
+        let updatePlan = await adapter.resolveUpdate(
+          gameSlug,
+          current.releaseId,
+        );
+        let plan = await adapter.prepareUpdate(updatePlan);
+        try {
+          await invoke<InstalledGame>('update_game', {
+            title,
+            plan,
+            authorizationRefreshAttempted: false,
+          });
+        } catch (reason) {
+          const failure = normalizeDistributionFailure(reason);
+          if (
+            failure.code !== 'DOWNLOAD_AUTHORIZATION_EXPIRED' &&
+            failure.code !== 'DOWNLOAD_INTERRUPTED'
+          ) {
+            throw reason;
+          }
+          updatePlan = await adapter.resolveUpdate(gameSlug, current.releaseId);
+          plan = await adapter.prepareUpdate(updatePlan);
+          await invoke<InstalledGame>('update_game', {
+            title,
+            plan,
+            authorizationRefreshAttempted: true,
+          });
+        }
+        await refresh();
+        setAvailableUpdates((values) => {
+          const next = { ...values };
+          delete next[gameSlug];
+          return next;
+        });
+      } catch (reason) {
+        const failure = normalizeDistributionFailure(reason);
+        const cancelled = failure.message.toLowerCase().includes('cancelled');
+        setProgress((values) => ({
+          ...values,
+          [gameSlug]: {
+            ...(values[gameSlug] ?? {
+              gameSlug,
+              title,
+              downloadedBytes: 0,
+              totalBytes: 0,
+              version: null,
+            }),
+            phase: cancelled ? 'cancelled' : 'failed',
+            error: cancelled ? null : failure.message,
+            errorCode: cancelled ? undefined : failure.code,
+            retryable: cancelled ? undefined : failure.retryable,
+          },
+        }));
+      }
+    },
+    [adapter, availableUpdates, install, installed, refresh],
+  );
+
   const cancel = useCallback(async (gameSlug: string) => {
     await invoke('cancel_installation', { gameSlug });
   }, []);
@@ -313,21 +403,50 @@ export function InstallationProvider({
 
   const checkForUpdates = useCallback(
     async (gameSlugs: string[]) => {
-      const updates: Record<string, string> = {};
+      const updates: Record<string, UpdateAvailability> = {};
       await Promise.allSettled(
         gameSlugs.map(async (gameSlug) => {
           const current = installed[gameSlug];
           if (!current) return;
           const release = await adapter.latest(gameSlug);
-          if (isUpdateAvailable(current, release)) {
-            updates[gameSlug] = release.version;
-          }
+          if (!isUpdateAvailable(current, release)) return;
+          const plan = await adapter.resolveUpdate(gameSlug, current.releaseId);
+          const patchSize =
+            plan.strategy === 'PATCH' ? plan.patch.patch.size_bytes : undefined;
+          const fullSize = plan.target.compressed_size_bytes;
+          const savingsPercent = patchSize
+            ? Math.max(
+                0,
+                Math.round((1 - Number(patchSize) / Number(fullSize)) * 100),
+              )
+            : undefined;
+          updates[gameSlug] = {
+            targetVersion: plan.target.version,
+            targetReleaseId: plan.target.id,
+            strategy: plan.strategy,
+            patchSizeBytes: patchSize,
+            fullSizeBytes: fullSize,
+            savingsPercent,
+          };
         }),
       );
       setAvailableUpdates(updates);
     },
     [adapter, installed],
   );
+
+  useEffect(() => {
+    const gameSlugs = Object.keys(installed).filter(
+      (gameSlug) => installed[gameSlug]?.status === 'INSTALLED',
+    );
+    if (gameSlugs.length === 0) return;
+    void checkForUpdates(gameSlugs);
+    const timer = window.setInterval(
+      () => void checkForUpdates(gameSlugs),
+      15 * 60 * 1000,
+    );
+    return () => window.clearInterval(timer);
+  }, [checkForUpdates, installed]);
 
   const value = useMemo(
     () => ({
@@ -336,6 +455,7 @@ export function InstallationProvider({
       playing,
       availableUpdates,
       install,
+      update,
       cancel,
       launch,
       uninstall,
@@ -352,6 +472,7 @@ export function InstallationProvider({
       playing,
       progress,
       refresh,
+      update,
       uninstall,
     ],
   );
