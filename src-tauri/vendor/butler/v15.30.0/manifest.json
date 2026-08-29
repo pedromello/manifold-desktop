@@ -1,0 +1,56 @@
+{
+  "version": "15.30.0",
+  "release": "https://github.com/itchio/butler/releases/tag/v15.30.0",
+  "targets": {
+    "windows-x86_64": {
+      "asset": "butler-windows-amd64.zip",
+      "archiveSha256": "d8886b653cbd3d6f2207d8edbad0addb27bb8660f70418760dd61edab18eec97",
+      "extractRoot": "windows-amd64",
+      "files": {
+        "butler.exe": "1099ebacba44c5e781babdc0cc409ba91010e284e9ca000e61753e8aa0e84be2",
+        "7z.dll": "4b77ce85d5cac538cc2b1a2d498af607dd5650975fd67549422702545290ef57",
+        "c7zip.dll": "9f79ae9b22d4b5a608eb35987419731ca85c7e531c9a9fa0af8099f783b6b9f5"
+      }
+    },
+    "linux-x86_64": {
+      "asset": "butler-linux-amd64.zip",
+      "archiveSha256": "f2cae7d24eba0605048f71d0cc056f65c3b7ff9f73724f504c731cf3645bef08",
+      "extractRoot": "linux-amd64",
+      "files": {
+        "butler": "f32d1d932528c3a0c4c0471d721dfe0c7c24fb16a0fc4e3e81f5a118e0b6d790",
+        "7z.so": "334ed1aaaacd3ddefb41db6ae7c3d766d40782095e7a1ed6c7105b3ca9d1ba88",
+        "libc7zip.so": "0370a19507b3c54e3ee8730feb344f54dc5819775f2c80a27d970084f9178c7c"
+      }
+    },
+    "linux-aarch64": {
+      "asset": "butler-linux-arm64.zip",
+      "archiveSha256": "d8418e690e46fa27092c53383b8ce8bd78a96bdbf6bb73f2d71484f4f4c5e74f",
+      "extractRoot": "linux-arm64",
+      "files": {
+        "butler": "474a1c47c133d6d8e01b47f033c23abaf1e30987a6928eea812d78e1e30b913d",
+        "7z.so": "a323bce742109c23c89a4353e44f47ce36bb7b71c4ac8574e00ddedacd587868",
+        "libc7zip.so": "3c745898e13fa7084a1c0e51ec11864ba612ba5f4dc883a874c76c814d2c63d9"
+      }
+    },
+    "macos-x86_64": {
+      "asset": "butler-darwin-amd64.zip",
+      "archiveSha256": "30452186424e6478ed63e6be21d6e427a0253bb00b9d768984d97c087a32913d",
+      "extractRoot": "darwin-amd64",
+      "files": {
+        "butler": "30f3c79fff5efe34474316402c23cccd9164167b25c05c743be5b130c62cd304",
+        "7z.so": "ce3c2af11eead60ffb9d37aff77ab434fc48663b3c2a1d40586259a1bac4ac6d",
+        "libc7zip.dylib": "e258106d10224324c3e13be3d56cf027c5d3fafc84d97edf3d51452b9b79730b"
+      }
+    },
+    "macos-aarch64": {
+      "asset": "butler-darwin-arm64.zip",
+      "archiveSha256": "936d18ee3b9f8b0726a22d7e14c122a23f918cf1af77510b3b0ade9d0ed065d5",
+      "extractRoot": "darwin-arm64",
+      "files": {
+        "butler": "aa5a9591a81ee968f89f45526d7a961fa96c7370f6e18559046a33dfcc81af96",
+        "7z.so": "cd03e851931f1e5e356e44ad3e611e9cdb7c7985199a214bc915fffe8e405dcf",
+        "libc7zip.dylib": "7715bc55baf65ea14c818f0fb816f5dc997292af6a4fd0a7b4a3be8095259909"
+      }
+    }
+  }
+}

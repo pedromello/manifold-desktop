@@ -49,6 +49,7 @@ jobs:
           npm run format
           npm run lint
           npm run typecheck
+          npm run sidecar:test
           npm test
 
       - name: Validate Rust

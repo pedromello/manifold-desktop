@@ -14,6 +14,7 @@ Install exactly what is recorded in the lockfiles and launch the native applicat
 
 ```sh
 npm ci
+npm run sidecar:prepare
 npm run tauri dev
 ```
 
@@ -27,7 +28,7 @@ VITE_APP_ENV=production npm run tauri build
 
 Only `development`, `staging`, and `production` are accepted. Production uses `https://manifoldpowered.com/api/v1`. Upstream does not define a staging hostname, so staging requires an explicit HTTPS origin in `MANIFOLD_API_BASE_URL`. The environment value is embedded during the frontend build, while Rust owns API-origin validation. Do not put secrets in Vite environment variables.
 
-The vendored [distribution API v1 contract](src/contracts/desktop-v1.ts) is synchronized from the website repository; see the [contract policy and provenance](docs/desktop-api-contract.md). Network calls, the native session cookie jar, downloads, installation, filesystem mutation, and process launching are implemented only as narrow Rust commands.
+The vendored [distribution API v1 contract](src/contracts/desktop-v1.ts) and [incremental-update implementation guide](docs/incremental-game-updates.md) is synchronized from the website repository; see the [contract policy and provenance](docs/desktop-api-contract.md). Network calls, the native session cookie jar, downloads, installation, filesystem mutation, and process launching are implemented only as narrow Rust commands.
 
 The UI ships with `pt-BR` and `en-US`. It initially follows the operating-system language and stores the user's explicit selection locally. New UI strings belong in both resource trees in `src/i18n.ts`.
 
