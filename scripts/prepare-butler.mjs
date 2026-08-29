@@ -14,7 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { butlerTarget } from './butler-target.mjs';
+import { butlerTarget, butlerTargetFromTriple } from './butler-target.mjs';
 
 const repository = join(dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = join(
@@ -26,7 +26,9 @@ const manifestPath = join(
   'manifest.json',
 );
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-const target = butlerTarget(process.platform, process.arch);
+const target = process.env.TAURI_ENV_TARGET_TRIPLE
+  ? butlerTargetFromTriple(process.env.TAURI_ENV_TARGET_TRIPLE)
+  : butlerTarget(process.platform, process.arch);
 const declaration = manifest.targets[target];
 if (!declaration)
   throw new Error(`Butler ${manifest.version} is not pinned for ${target}`);

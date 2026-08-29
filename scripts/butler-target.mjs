@@ -22,3 +22,22 @@ export function butlerTarget(platform, architecture) {
   }
   return `${mappedPlatform}-${mappedArchitecture}`;
 }
+
+export function butlerTargetFromTriple(targetTriple) {
+  const architecture = targetTriple.split('-', 1)[0];
+  const platform = targetTriple.includes('windows')
+    ? 'windows'
+    : targetTriple.includes('apple-darwin')
+      ? 'macos'
+      : targetTriple.includes('linux')
+        ? 'linux'
+        : null;
+  if (!platform || !['x86_64', 'aarch64'].includes(architecture)) {
+    throw new Error(`Butler is not pinned for target triple ${targetTriple}`);
+  }
+  const target = `${platform}-${architecture}`;
+  if (target === 'windows-aarch64') {
+    throw new Error(`Butler is not pinned for target triple ${targetTriple}`);
+  }
+  return target;
+}

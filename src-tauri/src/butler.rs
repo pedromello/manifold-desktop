@@ -177,11 +177,12 @@ struct ButlerDiagnostics {
 
 fn read_structured_output(reader: impl Read, structured: bool) -> ButlerDiagnostics {
     let mut diagnostics = ButlerDiagnostics::default();
-    for line in BufReader::new(reader)
-        .lines()
-        .map_while(Result::ok)
-        .take(512)
-    {
+    for line in BufReader::new(reader).lines().map_while(Result::ok) {
+        // Keep draining the pipe after the diagnostic cap so Butler can never
+        // fail with a broken pipe while producing a large diff or apply log.
+        if diagnostics.event_count >= 512 {
+            continue;
+        }
         if line.len() > 4096 {
             continue;
         }
@@ -213,9 +214,16 @@ fn read_structured_output(reader: impl Read, structured: bool) -> ButlerDiagnost
 }
 
 fn read_controlled_stderr(reader: impl Read) -> usize {
-    let mut limited = reader.take(16 * 1024);
-    let mut buffer = Vec::new();
-    limited.read_to_end(&mut buffer).unwrap_or(0)
+    let mut reader = reader;
+    let mut buffer = [0_u8; 8192];
+    let mut retained_bytes = 0_usize;
+    while let Ok(read) = reader.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        retained_bytes = retained_bytes.saturating_add(read).min(16 * 1024);
+    }
+    retained_bytes
 }
 impl Butler {
     pub fn locate<R: Runtime>(app: &AppHandle<R>) -> Result<Self, String> {
@@ -489,6 +497,22 @@ not-json
         let diagnostics = read_structured_output(&input[..], true);
         assert_eq!(diagnostics.progress, Some(80));
         assert_eq!(diagnostics.event_count, 2);
+    }
+
+    #[test]
+    fn diagnostics_are_capped_without_stopping_pipe_drainage() {
+        use std::io::Cursor;
+
+        let input = (0..600).map(|_| "{\"type\":\"log\"}\n").collect::<String>();
+        let mut reader = Cursor::new(input.as_bytes());
+        let diagnostics = read_structured_output(&mut reader, true);
+        assert_eq!(diagnostics.event_count, 512);
+        assert_eq!(reader.position(), input.len() as u64);
+
+        let stderr = vec![b'x'; 32 * 1024];
+        let mut stderr_reader = Cursor::new(stderr.as_slice());
+        assert_eq!(read_controlled_stderr(&mut stderr_reader), 16 * 1024);
+        assert_eq!(stderr_reader.position(), stderr.len() as u64);
     }
 
     #[cfg(windows)]

@@ -340,6 +340,36 @@ where
     verify_archive_checksum(destination, &authorization.sha256)
 }
 
+fn patch_payload_paths(downloads_root: &Path, patch_id: &str) -> (PathBuf, PathBuf) {
+    (
+        downloads_root.join(format!("{patch_id}.pwr.part")),
+        downloads_root.join(format!("{patch_id}.pwr.sig.part")),
+    )
+}
+
+fn remove_patch_payload_files(patch_path: &Path, signature_path: &Path) {
+    for path in [patch_path, signature_path] {
+        if path.exists() {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+fn cleanup_patch_attempt(app: &AppHandle, current: &InstalledGame, patch_id: &str) {
+    if let Ok(root) = app_data_directory(app) {
+        let (patch_path, signature_path) = patch_payload_paths(&root.join("downloads"), patch_id);
+        remove_patch_payload_files(&patch_path, &signature_path);
+    }
+    if let Ok((_, stage, _)) = derived_update_paths(current) {
+        if let Some(parent) = stage.parent() {
+            let butler_stage = parent.join(format!(".{}.butler", current.game_slug));
+            if butler_stage.exists() {
+                let _ = fs::remove_dir_all(butler_stage);
+            }
+        }
+    }
+}
+
 fn build_installed(
     current: &InstalledGame,
     title: &str,
@@ -573,8 +603,7 @@ async fn patch_update(
     tokio::fs::create_dir_all(&downloads_root)
         .await
         .map_err(|error| format!("could not create download directory: {error}"))?;
-    let patch_path = downloads_root.join(format!("{}.pwr.part", patch.id));
-    let signature_path = downloads_root.join(format!("{}.pwr.sig.part", patch.id));
+    let (patch_path, signature_path) = patch_payload_paths(&downloads_root, &patch.id);
     let total = downloads
         .patch
         .total_size_bytes
@@ -696,6 +725,7 @@ async fn patch_update(
         &backup,
     )?;
     let _ = fs::remove_dir_all(butler_stage);
+    remove_patch_payload_files(&patch_path, &signature_path);
     Ok(installed)
 }
 
@@ -747,7 +777,7 @@ pub async fn update_game(
             None,
         );
         match &plan.update {
-            UpdatePlan::Patch { .. } => {
+            UpdatePlan::Patch { patch, .. } => {
                 match patch_update(&app, &title, &plan, &current, &cancellation).await {
                     Ok(value) => Ok(value),
                     Err(error)
@@ -758,7 +788,10 @@ pub async fn update_game(
                     {
                         Err(error)
                     }
-                    Err(_) => full_update(&app, &title, &plan, &current, &cancellation, true).await,
+                    Err(_) => {
+                        cleanup_patch_attempt(&app, &current, &patch.id);
+                        full_update(&app, &title, &plan, &current, &cancellation, true).await
+                    }
                 }
             }
             UpdatePlan::Full { .. } => {
@@ -1058,6 +1091,20 @@ mod tests {
             "installation cancelled",
             true
         ));
+    }
+
+    #[test]
+    fn committed_or_fallback_updates_remove_patch_payloads() {
+        let directory = tempfile::tempdir().unwrap();
+        let (patch, signature) = patch_payload_paths(directory.path(), "patch-id");
+        fs::write(&patch, b"patch").unwrap();
+        fs::write(&signature, b"signature").unwrap();
+
+        remove_patch_payload_files(&patch, &signature);
+
+        assert!(!patch.exists());
+        assert!(!signature.exists());
+        remove_patch_payload_files(&patch, &signature);
     }
 
     #[test]

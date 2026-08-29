@@ -54,6 +54,7 @@ jobs:
 
       - name: Validate Rust
         run: |
+          npm run sidecar:prepare
           cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
           cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings
           cargo test --manifest-path src-tauri/Cargo.toml --locked
