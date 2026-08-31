@@ -15,6 +15,10 @@ const child = spawn(npm, ['run', 'tauri', '--', 'dev'], {
     ...(demo ? { MANIFOLD_DEBUG_DEMO: demo } : {}),
   },
   stdio: 'inherit',
+  // Windows cannot execute npm.cmd directly through CreateProcess on recent
+  // Node releases. Arguments are fixed by this script, so cmd.exe is not fed
+  // any user-controlled command text.
+  shell: process.platform === 'win32',
   windowsHide: false,
 });
 
