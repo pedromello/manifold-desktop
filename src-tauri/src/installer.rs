@@ -1358,7 +1358,11 @@ fn verify_archive_checksum(path: &Path, expected: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn extract_zip(archive_path: &Path, destination: &Path, maximum_size: u64) -> Result<(), String> {
+pub(crate) fn extract_zip(
+    archive_path: &Path,
+    destination: &Path,
+    maximum_size: u64,
+) -> Result<(), String> {
     let file = File::open(archive_path)
         .map_err(|error| format!("could not open artifact archive: {error}"))?;
     let mut archive = zip::ZipArchive::new(file)

@@ -668,6 +668,14 @@ impl ConsoleView {
     }
 
     fn accept(&mut self, event: DebugEvent) {
+        if self.starts_new_operation(&event) {
+            self.current = 0;
+            self.total = 0;
+            self.unit = "events".into();
+            self.fields.clear();
+            self.patch_rows.clear();
+            self.messages.clear();
+        }
         self.scope = event.scope;
         if let Some(phase) = event.phase {
             self.phase = phase;
@@ -689,6 +697,14 @@ impl ConsoleView {
         }
         for (key, value) in event.fields {
             self.fields.insert(key, value);
+        }
+    }
+
+    fn starts_new_operation(&self, event: &DebugEvent) -> bool {
+        match event.phase.as_deref() {
+            Some("analyzing" | "preparing_update") => true,
+            Some("downloading") => self.phase != "downloading",
+            _ => false,
         }
     }
 
@@ -1139,6 +1155,43 @@ mod tests {
         assert_eq!(progress_bar(5, 10, 10), "[█████░░░░░]");
         assert_eq!(progress_bar(20, 10, 4), "[████]");
         assert_eq!(progress_bar(1, 0, 3), "[░░░]");
+    }
+
+    #[test]
+    fn real_operations_clear_stale_patch_maps_and_demo_state() {
+        let mut view = ConsoleView::new("session", true);
+        view.patch_rows.push_back("demo [RRDD]".into());
+        view.fields.insert("strategy".into(), "PATCH".into());
+        view.messages.push_back("Demo complete".into());
+        view.current = 100;
+        view.total = 100;
+
+        view.accept(DebugEvent {
+            schema_version: EVENT_SCHEMA_VERSION,
+            sequence: 1,
+            timestamp_ms: 0,
+            session_id: "session".into(),
+            scope: DebugScope::Publisher,
+            kind: DebugEventKind::Stage,
+            phase: Some("analyzing".into()),
+            message: Some("Inspecting the real release archive.".into()),
+            current: None,
+            total: None,
+            unit: None,
+            fields: BTreeMap::from([("release_id".into(), "release-2".into())]),
+        });
+
+        assert!(view.patch_rows.is_empty());
+        assert_eq!(
+            view.messages,
+            VecDeque::from(["Inspecting the real release archive.".into()])
+        );
+        assert_eq!(view.fields.len(), 1);
+        assert_eq!(
+            view.fields.get("release_id").map(String::as_str),
+            Some("release-2")
+        );
+        assert_eq!((view.current, view.total), (0, 0));
     }
 
     #[test]

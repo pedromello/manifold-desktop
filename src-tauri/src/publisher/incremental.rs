@@ -120,6 +120,21 @@ fn valid_sha256(value: &str) -> bool {
             .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
 }
 
+fn extract_wharf_tree(
+    archive: &Path,
+    destination: &Path,
+    installed_size: u64,
+) -> Result<(), PublisherError> {
+    if destination.exists() {
+        fs::remove_dir_all(destination)
+            .map_err(|_| PublisherError::unavailable("could not reset Wharf input tree"))?;
+    }
+    fs::create_dir_all(destination)
+        .map_err(|_| PublisherError::unavailable("could not create Wharf input tree"))?;
+    crate::installer::extract_zip(archive, destination, installed_size)
+        .map_err(|error| PublisherError::new("PATCH_EXTRACTION_FAILED", error, true))
+}
+
 fn select_source_release(
     releases: &[PublisherReleaseApi],
     target_release_id: &str,
@@ -608,6 +623,8 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
     let recovery_path = work.join("recovery.json");
     let patch_path = work.join("update.pwr");
     let signature_path = work.join("update.pwr.sig");
+    let source_tree = work.join("source-tree");
+    let target_tree = work.join("target-tree");
     let rebuilt = work.join("rebuilt");
     let apply_stage = work.join("apply-stage");
     let required_space = required_temporary_space(
@@ -671,6 +688,24 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
         recovery = None;
     }
 
+    debug::event(
+        app,
+        DebugScope::Publisher,
+        DebugEventKind::Stage,
+        Some("preparing_patch"),
+        Some("Extracting the verified source and target ZIPs into isolated Wharf input trees."),
+        None,
+        [("workspace".into(), "isolated temporary directories".into())],
+    );
+    extract_wharf_tree(&old_archive, &source_tree, source_installed)?;
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(PublisherError::cancelled());
+    }
+    extract_wharf_tree(target_archive, &target_tree, target_installed_size)?;
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(PublisherError::cancelled());
+    }
+
     if recovery.is_none() {
         for path in [&patch_path, &signature_path] {
             if path.exists() {
@@ -688,7 +723,7 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
         let started = Instant::now();
         let butler = Butler::locate(app).map_err(PublisherError::unavailable)?;
         butler
-            .diff(&old_archive, target_archive, &patch_path, &cancellation)
+            .diff(&source_tree, &target_tree, &patch_path, &cancellation)
             .map_err(|error| PublisherError::new("PATCH_GENERATION_FAILED", error, true))?;
         if !signature_path.is_file() {
             return Err(PublisherError::new(
@@ -804,7 +839,7 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
             .apply_to(
                 &patch_path,
                 &signature_path,
-                &old_archive,
+                &source_tree,
                 &rebuilt,
                 &apply_stage,
                 &cancellation,

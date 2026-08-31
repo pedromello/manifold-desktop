@@ -1445,6 +1445,21 @@ pub(crate) async fn publish_release(
             0,
             0,
         );
+        debug::event(
+            &app,
+            DebugScope::Publisher,
+            DebugEventKind::Error,
+            Some("publication_error"),
+            Some(&format!(
+                "Publication failed [{}]: {}",
+                error.code, error.message
+            )),
+            None,
+            [
+                ("error_code".into(), error.code.clone()),
+                ("retryable".into(), error.retryable.to_string()),
+            ],
+        );
     }
     result
 }
