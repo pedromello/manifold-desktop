@@ -8,7 +8,7 @@ Manifold Desktop includes an opt-in companion terminal for observing release pub
 npm run desktop:debug
 ```
 
-The command sets `MANIFOLD_DEBUG_CONSOLE=1` and starts the normal Tauri development app. A second terminal opens with the Manifold ASCII wordmark and waits for a real publish or update operation.
+The command sets `MANIFOLD_DEBUG_CONSOLE=1` and starts the normal Tauri development app. A second terminal opens with a terminal-native, TrueColor Manifold emblem and wordmark, then waits for a real publish or update operation. The brand, progress bar, separators, and Wharf `R`/`D` map are rendered with ANSI colors and Unicode blocks; no image file is loaded at runtime.
 
 Two safe, synthetic demonstrations are available without an account or game data:
 

@@ -30,6 +30,13 @@ const DEBUG_ENVIRONMENT_VARIABLE: &str = "MANIFOLD_DEBUG_CONSOLE";
 const EVENT_SCHEMA_VERSION: u8 = 1;
 const EVENT_QUEUE_CAPACITY: usize = 512;
 const MAX_RECENT_MESSAGES: usize = 8;
+const CONSOLE_WIDTH: usize = 108;
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_FAINT: &str = "\x1b[2m";
+const BRAND_VIOLET: (u8, u8, u8) = (105, 61, 255);
+const BRAND_MAGENTA: (u8, u8, u8) = (255, 43, 178);
+const PREFERRED_CONSOLE_COLUMNS: usize = 120;
+const PREFERRED_CONSOLE_ROWS: usize = 40;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -501,6 +508,7 @@ pub fn maybe_run_console_child() -> bool {
 
 fn run_console(address: &str, token: &str, session_id: &str) -> Result<(), String> {
     prepare_console_io();
+    request_console_viewport();
     set_console_title();
     let mut stream = TcpStream::connect(address)
         .map_err(|error| format!("could not connect to the desktop process: {error}"))?;
@@ -622,6 +630,12 @@ fn set_console_title() {
     print!("\x1b]0;Manifold Incremental Debug Console\x07");
 }
 
+fn request_console_viewport() {
+    console_write(&format!(
+        "\x1b[8;{PREFERRED_CONSOLE_ROWS};{PREFERRED_CONSOLE_COLUMNS}t"
+    ));
+}
+
 struct ConsoleView {
     session_id: String,
     no_color: bool,
@@ -686,50 +700,46 @@ impl ConsoleView {
     fn render(&self) {
         use std::fmt::Write as _;
         let mut output = String::from("\x1b[2J\x1b[H");
-        let cyan = if self.no_color { "" } else { "\x1b[38;5;45m" };
-        let green = if self.no_color { "" } else { "\x1b[38;5;82m" };
-        let faint = if self.no_color { "" } else { "\x1b[2m" };
-        let reset = if self.no_color { "" } else { "\x1b[0m" };
-        let _ = writeln!(output, "{cyan}{}{reset}", ascii_logo());
+        let faint = if self.no_color { "" } else { ANSI_FAINT };
+        let reset = if self.no_color { "" } else { ANSI_RESET };
         let _ = writeln!(
             output,
-            "{faint}INCREMENTAL DISTRIBUTION DEBUG CONSOLE  |  {}{reset}",
-            self.session_id
+            "{faint}Read-only diagnostics. Signed URLs, credentials, and local paths are redacted.{reset}"
         );
-        let _ = writeln!(output, "{}", "─".repeat(78));
+        let _ = write!(output, "{}", brand_header(&self.session_id, self.no_color));
+        let _ = writeln!(output, "{}", separator(self.no_color));
         let _ = writeln!(output, "Scope  : {:?}", self.scope);
         let _ = writeln!(output, "Stage  : {}", self.phase);
         let _ = writeln!(
             output,
-            "Progress: {green}{}{reset}  {} / {} {}",
-            progress_bar(self.current, self.total, 36),
+            "Progress: {}  {} / {} {}",
+            colored_progress_bar(self.current, self.total, 36, self.no_color),
             self.current,
             self.total,
             self.unit
         );
         if !self.fields.is_empty() {
-            let _ = writeln!(output, "{}", "─".repeat(78));
+            let _ = writeln!(output, "{}", separator(self.no_color));
             for (key, value) in self.fields.iter().rev().take(6).rev() {
                 let _ = writeln!(output, "{key:>22}: {value}");
             }
         }
         if !self.patch_rows.is_empty() {
-            let _ = writeln!(output, "{}", "─".repeat(78));
+            let _ = writeln!(output, "{}", separator(self.no_color));
             let _ = writeln!(
                 output,
                 "Wharf block map  (R = reused locally, D = fresh .pwr data)"
             );
             for row in &self.patch_rows {
-                let _ = writeln!(output, "  {row}");
+                let _ = writeln!(output, "  {}", colorize_patch_row(row, self.no_color));
             }
         }
-        let _ = writeln!(output, "{}", "─".repeat(78));
+        let _ = writeln!(output, "{}", separator(self.no_color));
         let _ = writeln!(output, "Recent events");
         for message in &self.messages {
             let _ = writeln!(output, "  • {message}");
         }
         let _ = writeln!(output);
-        let _ = writeln!(output, "{faint}Read-only diagnostics. Signed URLs, credentials, and local paths are redacted.{reset}");
         console_write(&output);
     }
 }
@@ -770,13 +780,146 @@ fn console_write(value: &str) {
     let _ = std::io::stdout().flush();
 }
 
-fn ascii_logo() -> &'static str {
-    r#"███╗   ███╗ █████╗ ███╗   ██╗██╗███████╗ ██████╗ ██╗     ██████╗
-████╗ ████║██╔══██╗████╗  ██║██║██╔════╝██╔═══██╗██║     ██╔══██╗
-██╔████╔██║███████║██╔██╗ ██║██║█████╗  ██║   ██║██║     ██║  ██║
-██║╚██╔╝██║██╔══██║██║╚██╗██║██║██╔══╝  ██║   ██║██║     ██║  ██║
-██║ ╚═╝ ██║██║  ██║██║ ╚████║██║██║     ╚██████╔╝███████╗██████╔╝
-╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝      ╚═════╝ ╚══════╝╚═════╝"#
+const LOGO_DISC: [&str; 8] = [
+    "  #####  ",
+    " ####### ",
+    "#########",
+    "#########",
+    "#########",
+    " ####### ",
+    "  #####  ",
+    "  #####  ",
+];
+
+const LOGO_MARK: [&str; 8] = [
+    "         ",
+    " W     W ",
+    "  W   W  ",
+    "W  W W  W",
+    " W  W  W ",
+    "  W W W  ",
+    "   WWW   ",
+    "    W    ",
+];
+
+const WORDMARK_3D: [&str; 6] = [
+    "███╗   ███╗ █████╗ ███╗   ██╗██╗███████╗ ██████╗ ██╗     ██████╗ ",
+    "████╗ ████║██╔══██╗████╗  ██║██║██╔════╝██╔═══██╗██║     ██╔══██╗",
+    "██╔████╔██║███████║██╔██╗ ██║██║█████╗  ██║   ██║██║     ██║  ██║",
+    "██║╚██╔╝██║██╔══██║██║╚██╗██║██║██╔══╝  ██║   ██║██║     ██║  ██║",
+    "██║ ╚═╝ ██║██║  ██║██║ ╚████║██║██║     ╚██████╔╝███████╗██████╔╝",
+    "╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝╚═╝      ╚═════╝ ╚══════╝╚═════╝ ",
+];
+
+fn brand_header(session_id: &str, no_color: bool) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::new();
+    for row in 0..LOGO_DISC.len() {
+        let _ = write!(output, "{} ", logo_row(row, no_color));
+        if row < WORDMARK_3D.len() {
+            let _ = write!(output, "{}", wordmark_row(row, no_color));
+        } else if row == WORDMARK_3D.len() {
+            let subtitle = format!("INCREMENTAL DISTRIBUTION DEBUG CONSOLE  |  {session_id}");
+            if no_color {
+                let _ = write!(output, "{subtitle}");
+            } else {
+                let _ = write!(output, "{ANSI_FAINT}{subtitle}{ANSI_RESET}");
+            }
+        }
+        output.push('\n');
+    }
+    output
+}
+
+fn logo_row(row: usize, no_color: bool) -> String {
+    let mut output = String::new();
+    for (column, (disc, mark)) in LOGO_DISC[row]
+        .chars()
+        .zip(LOGO_MARK[row].chars())
+        .enumerate()
+    {
+        if disc == ' ' {
+            output.push_str("  ");
+        } else if no_color {
+            output.push_str(if mark == 'W' { "██" } else { "▓▒" });
+        } else if mark == 'W' {
+            output.push_str("\x1b[38;2;255;255;255m█\x1b[38;2;205;205;220m█");
+        } else {
+            let (red, green, blue) = gradient_color(column, LOGO_DISC[row].len() - 1);
+            let (shadow_red, shadow_green, shadow_blue) = shade_color((red, green, blue), 82);
+            let _ = std::fmt::Write::write_fmt(
+                &mut output,
+                format_args!(
+                    "\x1b[38;2;{red};{green};{blue}m█\x1b[38;2;{shadow_red};{shadow_green};{shadow_blue}m█"
+                ),
+            );
+        }
+    }
+    if !no_color {
+        output.push_str(ANSI_RESET);
+    }
+    output
+}
+
+fn wordmark_row(row: usize, no_color: bool) -> String {
+    use std::fmt::Write as _;
+    let line = WORDMARK_3D[row];
+    if no_color {
+        return line.to_string();
+    }
+    let width = line.chars().count().saturating_sub(1);
+    let mut output = String::new();
+    for (column, character) in line.chars().enumerate() {
+        if character == ' ' {
+            output.push(character);
+            continue;
+        }
+        let color = gradient_color(column, width);
+        let (red, green, blue) = if character == '█' {
+            color
+        } else {
+            shade_color(color, 56)
+        };
+        let _ = write!(output, "\x1b[38;2;{red};{green};{blue}m{character}");
+    }
+    output.push_str(ANSI_RESET);
+    output
+}
+
+fn gradient_color(position: usize, maximum: usize) -> (u8, u8, u8) {
+    if maximum == 0 {
+        return BRAND_VIOLET;
+    }
+    let interpolate = |start: u8, end: u8| {
+        let start = i32::from(start);
+        let delta = i32::from(end) - start;
+        (start + delta * position as i32 / maximum as i32) as u8
+    };
+    (
+        interpolate(BRAND_VIOLET.0, BRAND_MAGENTA.0),
+        interpolate(BRAND_VIOLET.1, BRAND_MAGENTA.1),
+        interpolate(BRAND_VIOLET.2, BRAND_MAGENTA.2),
+    )
+}
+
+fn shade_color((red, green, blue): (u8, u8, u8), percentage: u16) -> (u8, u8, u8) {
+    let shade = |channel: u8| ((u16::from(channel) * percentage) / 100) as u8;
+    (shade(red), shade(green), shade(blue))
+}
+
+fn separator(no_color: bool) -> String {
+    if no_color {
+        "─".repeat(CONSOLE_WIDTH)
+    } else {
+        format!(
+            "\x1b[38;2;{};{};{}m{}{}",
+            BRAND_MAGENTA.0,
+            BRAND_MAGENTA.1,
+            BRAND_MAGENTA.2,
+            "─".repeat(CONSOLE_WIDTH),
+            ANSI_RESET
+        )
+    }
 }
 
 fn progress_bar(current: u64, total: u64, width: usize) -> String {
@@ -786,6 +929,72 @@ fn progress_bar(current: u64, total: u64, width: usize) -> String {
         ((current.min(total) as u128 * width as u128) / total as u128) as usize
     };
     format!("[{}{}]", "█".repeat(filled), "░".repeat(width - filled))
+}
+
+fn colored_progress_bar(current: u64, total: u64, width: usize, no_color: bool) -> String {
+    use std::fmt::Write as _;
+    if no_color {
+        return progress_bar(current, total, width);
+    }
+    let filled = if total == 0 {
+        0
+    } else {
+        ((current.min(total) as u128 * width as u128) / total as u128) as usize
+    };
+    let mut output = String::from("[");
+    for position in 0..filled {
+        let (red, green, blue) = gradient_color(position, width.saturating_sub(1));
+        let _ = write!(output, "\x1b[38;2;{red};{green};{blue}m█");
+    }
+    if filled < width {
+        output.push_str("\x1b[38;2;48;48;55m");
+        output.push_str(&"░".repeat(width - filled));
+    }
+    output.push_str(ANSI_RESET);
+    output.push(']');
+    output
+}
+
+fn colorize_patch_row(row: &str, no_color: bool) -> String {
+    if no_color {
+        return row.to_string();
+    }
+    let mut output = String::new();
+    let mut inside_map = false;
+    for character in row.chars() {
+        match character {
+            '[' => {
+                inside_map = true;
+                output.push('[');
+            }
+            ']' => {
+                inside_map = false;
+                output.push_str(ANSI_RESET);
+                output.push(']');
+            }
+            'R' if inside_map => {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut output,
+                    format_args!(
+                        "\x1b[38;2;{};{};{}mR",
+                        BRAND_VIOLET.0, BRAND_VIOLET.1, BRAND_VIOLET.2
+                    ),
+                );
+            }
+            'D' if inside_map => {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut output,
+                    format_args!(
+                        "\x1b[38;2;{};{};{}mD",
+                        BRAND_MAGENTA.0, BRAND_MAGENTA.1, BRAND_MAGENTA.2
+                    ),
+                );
+            }
+            _ => output.push(character),
+        }
+    }
+    output.push_str(ANSI_RESET);
+    output
 }
 
 fn sanitize_key(value: &str) -> String {
@@ -872,7 +1081,32 @@ mod tests {
 
     #[test]
     fn logo_spells_the_product_name() {
-        assert!(ascii_logo().lines().count() >= 5);
-        assert!(ascii_logo().contains("███"));
+        let header = brand_header("dbg-test", true);
+        assert_eq!(header.lines().count(), 8);
+        assert!(header.contains("INCREMENTAL DISTRIBUTION DEBUG CONSOLE"));
+        assert!(header.contains("dbg-test"));
+        assert!(!header.contains("\x1b["));
+        assert!(
+            header
+                .lines()
+                .all(|line| line.chars().count() <= CONSOLE_WIDTH),
+            "the brand must fit the default companion terminal"
+        );
+    }
+
+    #[test]
+    fn colored_branding_uses_truecolor_and_patch_map_colors() {
+        let header = brand_header("dbg-test", false);
+        assert!(header.contains("\x1b[38;2;"));
+        assert!(header.contains("255;255;255m█"));
+        assert!(header.contains("205;205;220m█"));
+
+        let row = colorize_patch_row("game.pak [RRDD] reuse 50%", false);
+        assert!(row.contains("105;61;255mR"));
+        assert!(row.contains("255;43;178mD"));
+        assert_eq!(
+            colorize_patch_row("game.pak [RRDD]", true),
+            "game.pak [RRDD]"
+        );
     }
 }
