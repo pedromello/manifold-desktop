@@ -109,6 +109,8 @@ it('reveals Studio only after an authenticated publisher has a studio', async ()
   expect(
     await screen.findByRole('link', { name: 'Studio' }),
   ).toBeInTheDocument();
+  expect(screen.getByText('publisher')).toBeInTheDocument();
+  expect(screen.queryByText('publisher@example.com')).not.toBeInTheDocument();
 });
 
 it('renders a Steam-only promotion without presenting it as free', async () => {

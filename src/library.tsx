@@ -293,7 +293,7 @@ export function LibraryPage({
           <>
             <div className="library-summary">
               <span>{t('common.games', { count: catalog?.total ?? 0 })}</span>
-              <span>{t('library.signedIn', { email: user.email })}</span>
+              <span>{t('library.signedIn', { username: user.username })}</span>
             </div>
             <div className="library-grid">
               {games.map((game) => {

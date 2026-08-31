@@ -266,6 +266,11 @@ function ReleaseArtifactWizard({
         : 0,
     [totalBytes, uploadedBytes],
   );
+  const isLocalProcessing = (
+    ['analyzing', 'preparing_patch', 'validating_patch'] as const
+  ).includes(
+    publisherPhase as 'analyzing' | 'preparing_patch' | 'validating_patch',
+  );
 
   if (!stored) {
     return (
@@ -660,24 +665,28 @@ function ReleaseArtifactWizard({
                   <h2 ref={headingRef} tabIndex={-1}>
                     {stored.phase === 'verifying'
                       ? t('publisher.verifyingTitle')
-                      : publisherPhase === 'preparing_patch'
-                        ? t('publisher.preparingPatchTitle')
-                        : publisherPhase === 'validating_patch'
-                          ? t('publisher.validatingPatchTitle')
-                          : publisherPhase === 'uploading_patch'
-                            ? t('publisher.uploadingPatchTitle')
-                            : t('publisher.uploadTitle')}
+                      : publisherPhase === 'analyzing'
+                        ? t('publisher.processingTitle')
+                        : publisherPhase === 'preparing_patch'
+                          ? t('publisher.preparingPatchTitle')
+                          : publisherPhase === 'validating_patch'
+                            ? t('publisher.validatingPatchTitle')
+                            : publisherPhase === 'uploading_patch'
+                              ? t('publisher.uploadingPatchTitle')
+                              : t('publisher.uploadTitle')}
                   </h2>
                   <p>
                     {stored.phase === 'verifying'
                       ? t('publisher.verifyingHelp')
-                      : publisherPhase === 'preparing_patch'
-                        ? t('publisher.preparingPatchHelp')
-                        : publisherPhase === 'validating_patch'
-                          ? t('publisher.validatingPatchHelp')
-                          : publisherPhase === 'uploading_patch'
-                            ? t('publisher.uploadingPatchHelp')
-                            : t('publisher.uploadHelp')}
+                      : publisherPhase === 'analyzing'
+                        ? t('publisher.processingHelp')
+                        : publisherPhase === 'preparing_patch'
+                          ? t('publisher.preparingPatchHelp')
+                          : publisherPhase === 'validating_patch'
+                            ? t('publisher.validatingPatchHelp')
+                            : publisherPhase === 'uploading_patch'
+                              ? t('publisher.uploadingPatchHelp')
+                              : t('publisher.uploadHelp')}
                   </p>
                 </div>
               </div>
@@ -694,34 +703,60 @@ function ReleaseArtifactWizard({
                         })}
                       </p>
                     )}
-                  <div className="upload-meter-row">
-                    <span>{inspection?.fileName}</span>
-                    <strong>{percent}%</strong>
-                  </div>
-                  <div
-                    className="install-progress upload-progress"
-                    role="progressbar"
-                    aria-label={t('publisher.uploadProgress')}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={percent}
-                  >
-                    <span style={{ width: `${percent}%` }} />
-                  </div>
-                  <div className="upload-meter-row secondary">
-                    <span>
-                      {t('publisher.bytesUploaded', {
-                        uploaded: humanBytes(
-                          String(uploadedBytes),
-                          i18n.language,
-                        ),
-                        total: humanBytes(String(totalBytes), i18n.language),
-                      })}
-                    </span>
-                    {attempt > 1 && (
-                      <span>{t('publisher.retryAttempt', { attempt })}</span>
-                    )}
-                  </div>
+                  {isLocalProcessing ? (
+                    <div className="publisher-local-processing" role="status">
+                      <div className="upload-meter-row">
+                        <span>{inspection?.fileName}</span>
+                        <strong>{t('publisher.processingStatus')}</strong>
+                      </div>
+                      <div
+                        className="install-progress upload-progress indeterminate"
+                        role="progressbar"
+                        aria-label={t('publisher.processingProgress')}
+                      >
+                        <span />
+                      </div>
+                      <div className="upload-meter-row secondary">
+                        <span>{t('publisher.processingLocally')}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="upload-meter-row">
+                        <span>{inspection?.fileName}</span>
+                        <strong>{percent}%</strong>
+                      </div>
+                      <div
+                        className="install-progress upload-progress"
+                        role="progressbar"
+                        aria-label={t('publisher.uploadProgress')}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-valuenow={percent}
+                      >
+                        <span style={{ width: `${percent}%` }} />
+                      </div>
+                      <div className="upload-meter-row secondary">
+                        <span>
+                          {t('publisher.bytesUploaded', {
+                            uploaded: humanBytes(
+                              String(uploadedBytes),
+                              i18n.language,
+                            ),
+                            total: humanBytes(
+                              String(totalBytes),
+                              i18n.language,
+                            ),
+                          })}
+                        </span>
+                        {attempt > 1 && (
+                          <span>
+                            {t('publisher.retryAttempt', { attempt })}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  )}
                   <button
                     className="secondary-action cancel-upload"
                     type="button"

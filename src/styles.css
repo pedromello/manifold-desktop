@@ -1709,6 +1709,29 @@ textarea:focus-visible {
 .upload-progress {
   height: 6px;
 }
+.publisher-local-processing {
+  display: grid;
+  gap: 12px;
+}
+.upload-progress.indeterminate > span {
+  width: 34%;
+  animation: publisher-processing 1.35s ease-in-out infinite;
+  background: linear-gradient(90deg, #762eea, #dc35f1, #7df9ff);
+}
+@keyframes publisher-processing {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(310%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .upload-progress.indeterminate > span {
+    width: 55%;
+    animation: none;
+  }
+}
 .cancel-upload {
   width: fit-content;
 }

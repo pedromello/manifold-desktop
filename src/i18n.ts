@@ -168,13 +168,19 @@ const resources = {
         retryUpload: 'Tentar novamente',
         uploadLocked:
           'O envio já começou. O arquivo selecionado será usado na nova tentativa.',
-        preparingPatchTitle: 'Preparando atualização incremental',
+        processingTitle: 'Processando arquivo do jogo',
+        processingHelp:
+          'Lendo e organizando os arquivos selecionados. Isso pode levar alguns minutos.',
+        processingStatus: 'Processando…',
+        processingProgress: 'Processamento do arquivo do jogo',
+        processingLocally: 'Processando neste computador',
+        preparingPatchTitle: 'Preparando os arquivos do jogo',
         preparingPatchHelp:
-          'Validando o predecessor e o espaço temporário necessário.',
-        validatingPatchTitle: 'Validando patch incremental',
+          'Comparando esta versão com a anterior para reduzir o tamanho do envio.',
+        validatingPatchTitle: 'Conferindo a nova versão',
         validatingPatchHelp:
-          'Reconstruindo a nova versão localmente antes de enviar.',
-        uploadingPatchTitle: 'Enviando patch incremental',
+          'Verificando se os arquivos processados estão prontos para publicação.',
+        uploadingPatchTitle: 'Enviando arquivos da atualização',
         uploadingPatchHelp:
           'O ZIP final só será enviado após o patch ser confirmado.',
         temporarySpace: 'Espaço temporário necessário: {{size}}',
@@ -261,7 +267,7 @@ const resources = {
         emptyText: 'Jogos adquiridos por uma Outlet Manifold aparecerão aqui.',
         explore: 'Explorar a loja',
         noResults: 'Nenhum jogo corresponde a “{{query}}”.',
-        signedIn: 'Conectado como {{email}}',
+        signedIn: 'Conectado como {{username}}',
         artwork: 'Arte de {{title}}',
         owned: 'Na sua biblioteca',
         acquiredVia: 'Adquirido via {{outlet}}',
@@ -561,13 +567,19 @@ const resources = {
         retryUpload: 'Try again',
         uploadLocked:
           'Sending has started. The selected file will be used for the next attempt.',
-        preparingPatchTitle: 'Preparing incremental update',
+        processingTitle: 'Processing game file',
+        processingHelp:
+          'Reading and organizing the selected files. This may take a few minutes.',
+        processingStatus: 'Processing…',
+        processingProgress: 'Game file processing',
+        processingLocally: 'Processing on this computer',
+        preparingPatchTitle: 'Preparing game files',
         preparingPatchHelp:
-          'Checking the predecessor and required temporary space.',
-        validatingPatchTitle: 'Validating incremental patch',
+          'Comparing this version with the previous one to reduce the upload size.',
+        validatingPatchTitle: 'Checking the new version',
         validatingPatchHelp:
-          'Rebuilding the new version locally before upload.',
-        uploadingPatchTitle: 'Uploading incremental patch',
+          'Making sure the processed files are ready to publish.',
+        uploadingPatchTitle: 'Uploading update files',
         uploadingPatchHelp:
           'The final ZIP is sent only after the patch is confirmed.',
         temporarySpace: 'Temporary space required: {{size}}',
@@ -653,7 +665,7 @@ const resources = {
         emptyText: 'Games acquired through a Manifold Outlet will appear here.',
         explore: 'Explore the store',
         noResults: 'No games match “{{query}}”.',
-        signedIn: 'Signed in as {{email}}',
+        signedIn: 'Signed in as {{username}}',
         artwork: '{{title}} artwork',
         owned: 'In your library',
         acquiredVia: 'Acquired via {{outlet}}',
