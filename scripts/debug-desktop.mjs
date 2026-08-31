@@ -8,17 +8,22 @@ if (demo && !['publisher', 'updater'].includes(demo)) {
 }
 
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-const child = spawn(npm, ['run', 'tauri', '--', 'dev'], {
+const npmEntry = process.env.npm_execpath;
+const command = npmEntry ? process.execPath : npm;
+const commandArguments = npmEntry
+  ? [npmEntry, 'run', 'tauri', '--', 'dev']
+  : ['run', 'tauri', '--', 'dev'];
+const child = spawn(command, commandArguments, {
   env: {
     ...process.env,
     MANIFOLD_DEBUG_CONSOLE: '1',
     ...(demo ? { MANIFOLD_DEBUG_DEMO: demo } : {}),
   },
   stdio: 'inherit',
-  // Windows cannot execute npm.cmd directly through CreateProcess on recent
-  // Node releases. Arguments are fixed by this script, so cmd.exe is not fed
-  // any user-controlled command text.
-  shell: process.platform === 'win32',
+  // npm exposes its JS entrypoint to lifecycle scripts. Calling it through the
+  // current Node executable avoids npm.cmd/CreateProcess incompatibilities and
+  // does not require a shell on Windows.
+  shell: !npmEntry && process.platform === 'win32',
   windowsHide: false,
 });
 
