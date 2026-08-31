@@ -35,6 +35,8 @@ const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_FAINT: &str = "\x1b[2m";
 const BRAND_VIOLET: (u8, u8, u8) = (105, 61, 255);
 const BRAND_MAGENTA: (u8, u8, u8) = (255, 43, 178);
+const BRAND_TOP: (u8, u8, u8) = (224, 39, 246);
+const BRAND_BOTTOM: (u8, u8, u8) = (105, 54, 238);
 const PREFERRED_CONSOLE_COLUMNS: usize = 120;
 const PREFERRED_CONSOLE_ROWS: usize = 40;
 
@@ -744,6 +746,103 @@ impl ConsoleView {
     }
 }
 
+const LOGO_WIDTH: usize = 22;
+const LOGO_HEIGHT: usize = 18;
+const TERMINAL_BACKGROUND: (u8, u8, u8) = (8, 8, 10);
+
+#[derive(Clone, Copy)]
+struct LogoPixel {
+    color: (u8, u8, u8),
+    is_mark: bool,
+}
+
+fn manifold_logo_row(row: usize, no_color: bool) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::new();
+    for column in 0..LOGO_WIDTH {
+        let top = manifold_logo_pixel(column, row * 2);
+        let bottom = manifold_logo_pixel(column, row * 2 + 1);
+        if no_color {
+            output.push(match (top, bottom) {
+                (Some(top), Some(bottom)) if top.is_mark || bottom.is_mark => '█',
+                (Some(_), Some(_)) => '▓',
+                (Some(_), None) => '▀',
+                (None, Some(_)) => '▄',
+                (None, None) => ' ',
+            });
+        } else {
+            let (top_red, top_green, top_blue) =
+                top.map(|pixel| pixel.color).unwrap_or(TERMINAL_BACKGROUND);
+            let (bottom_red, bottom_green, bottom_blue) = bottom
+                .map(|pixel| pixel.color)
+                .unwrap_or(TERMINAL_BACKGROUND);
+            let _ = write!(
+                output,
+                "\x1b[38;2;{top_red};{top_green};{top_blue}m\x1b[48;2;{bottom_red};{bottom_green};{bottom_blue}m▀"
+            );
+        }
+    }
+    if !no_color {
+        output.push_str(ANSI_RESET);
+    }
+    output
+}
+
+fn manifold_logo_pixel(column: usize, row: usize) -> Option<LogoPixel> {
+    let x = column as f32 + 0.5;
+    let y = row as f32 + 0.5;
+    let inside = inside_logo_circle(x, y);
+    let mark = inside && inside_logo_mark(x, y);
+    if mark {
+        return Some(LogoPixel {
+            color: (252, 250, 255),
+            is_mark: true,
+        });
+    }
+    if inside {
+        Some(LogoPixel {
+            color: vertical_brand_color(row, LOGO_HEIGHT - 1),
+            is_mark: false,
+        })
+    } else {
+        None
+    }
+}
+
+fn logo_circle_distance(x: f32, y: f32) -> f32 {
+    let horizontal = (x - LOGO_WIDTH as f32 / 2.0) / 10.2;
+    let vertical = (y - LOGO_HEIGHT as f32 / 2.0) / 8.3;
+    horizontal * horizontal + vertical * vertical
+}
+
+fn inside_logo_circle(x: f32, y: f32) -> bool {
+    logo_circle_distance(x, y) <= 1.0
+}
+
+fn inside_logo_mark(x: f32, y: f32) -> bool {
+    const CURVES: [[(f32, f32); 4]; 4] = [
+        [(5.7, 2.7), (8.0, 5.0), (10.2, 9.0), (10.7, 14.7)],
+        [(16.3, 2.7), (14.0, 5.0), (11.8, 9.0), (11.3, 14.7)],
+        [(2.7, 6.4), (5.2, 8.3), (6.8, 11.0), (7.0, 14.7)],
+        [(19.3, 6.4), (16.8, 8.3), (15.2, 11.0), (15.0, 14.7)],
+    ];
+    CURVES.iter().any(|curve| {
+        (0..=36).any(|step| {
+            let t = step as f32 / 36.0;
+            let inverse = 1.0 - t;
+            let curve_x = inverse.powi(3) * curve[0].0
+                + 3.0 * inverse.powi(2) * t * curve[1].0
+                + 3.0 * inverse * t.powi(2) * curve[2].0
+                + t.powi(3) * curve[3].0;
+            let curve_y = inverse.powi(3) * curve[0].1
+                + 3.0 * inverse.powi(2) * t * curve[1].1
+                + 3.0 * inverse * t.powi(2) * curve[2].1
+                + t.powi(3) * curve[3].1;
+            (x - curve_x).powi(2) + (y - curve_y).powi(2) <= 0.78_f32.powi(2)
+        })
+    })
+}
+
 #[cfg(windows)]
 fn console_write(value: &str) {
     use std::ffi::c_void;
@@ -780,28 +879,6 @@ fn console_write(value: &str) {
     let _ = std::io::stdout().flush();
 }
 
-const LOGO_DISC: [&str; 8] = [
-    "  #####  ",
-    " ####### ",
-    "#########",
-    "#########",
-    "#########",
-    " ####### ",
-    "  #####  ",
-    "  #####  ",
-];
-
-const LOGO_MARK: [&str; 8] = [
-    "         ",
-    " W     W ",
-    "  W   W  ",
-    "W  W W  W",
-    " W  W  W ",
-    "  W W W  ",
-    "   WWW   ",
-    "    W    ",
-];
-
 const WORDMARK_3D: [&str; 6] = [
     "███╗   ███╗ █████╗ ███╗   ██╗██╗███████╗ ██████╗ ██╗     ██████╗ ",
     "████╗ ████║██╔══██╗████╗  ██║██║██╔════╝██╔═══██╗██║     ██╔══██╗",
@@ -814,11 +891,11 @@ const WORDMARK_3D: [&str; 6] = [
 fn brand_header(session_id: &str, no_color: bool) -> String {
     use std::fmt::Write as _;
     let mut output = String::new();
-    for row in 0..LOGO_DISC.len() {
-        let _ = write!(output, "{} ", logo_row(row, no_color));
-        if row < WORDMARK_3D.len() {
-            let _ = write!(output, "{}", wordmark_row(row, no_color));
-        } else if row == WORDMARK_3D.len() {
+    for row in 0..(LOGO_HEIGHT / 2) {
+        let _ = write!(output, "{} ", manifold_logo_row(row, no_color));
+        if (2..(WORDMARK_3D.len() + 2)).contains(&row) {
+            let _ = write!(output, "{}", wordmark_row(row - 2, no_color));
+        } else if row == WORDMARK_3D.len() + 2 {
             let subtitle = format!("INCREMENTAL DISTRIBUTION DEBUG CONSOLE  |  {session_id}");
             if no_color {
                 let _ = write!(output, "{subtitle}");
@@ -831,50 +908,19 @@ fn brand_header(session_id: &str, no_color: bool) -> String {
     output
 }
 
-fn logo_row(row: usize, no_color: bool) -> String {
-    let mut output = String::new();
-    for (column, (disc, mark)) in LOGO_DISC[row]
-        .chars()
-        .zip(LOGO_MARK[row].chars())
-        .enumerate()
-    {
-        if disc == ' ' {
-            output.push_str("  ");
-        } else if no_color {
-            output.push_str(if mark == 'W' { "██" } else { "▓▒" });
-        } else if mark == 'W' {
-            output.push_str("\x1b[38;2;255;255;255m█\x1b[38;2;205;205;220m█");
-        } else {
-            let (red, green, blue) = gradient_color(column, LOGO_DISC[row].len() - 1);
-            let (shadow_red, shadow_green, shadow_blue) = shade_color((red, green, blue), 82);
-            let _ = std::fmt::Write::write_fmt(
-                &mut output,
-                format_args!(
-                    "\x1b[38;2;{red};{green};{blue}m█\x1b[38;2;{shadow_red};{shadow_green};{shadow_blue}m█"
-                ),
-            );
-        }
-    }
-    if !no_color {
-        output.push_str(ANSI_RESET);
-    }
-    output
-}
-
 fn wordmark_row(row: usize, no_color: bool) -> String {
     use std::fmt::Write as _;
     let line = WORDMARK_3D[row];
     if no_color {
         return line.to_string();
     }
-    let width = line.chars().count().saturating_sub(1);
+    let color = vertical_brand_color(row, WORDMARK_3D.len() - 1);
     let mut output = String::new();
-    for (column, character) in line.chars().enumerate() {
+    for character in line.chars() {
         if character == ' ' {
             output.push(character);
             continue;
         }
-        let color = gradient_color(column, width);
         let (red, green, blue) = if character == '█' {
             color
         } else {
@@ -899,6 +945,22 @@ fn gradient_color(position: usize, maximum: usize) -> (u8, u8, u8) {
         interpolate(BRAND_VIOLET.0, BRAND_MAGENTA.0),
         interpolate(BRAND_VIOLET.1, BRAND_MAGENTA.1),
         interpolate(BRAND_VIOLET.2, BRAND_MAGENTA.2),
+    )
+}
+
+fn vertical_brand_color(position: usize, maximum: usize) -> (u8, u8, u8) {
+    if maximum == 0 {
+        return BRAND_TOP;
+    }
+    let interpolate = |start: u8, end: u8| {
+        let start = i32::from(start);
+        let delta = i32::from(end) - start;
+        (start + delta * position as i32 / maximum as i32) as u8
+    };
+    (
+        interpolate(BRAND_TOP.0, BRAND_BOTTOM.0),
+        interpolate(BRAND_TOP.1, BRAND_BOTTOM.1),
+        interpolate(BRAND_TOP.2, BRAND_BOTTOM.2),
     )
 }
 
@@ -1082,7 +1144,7 @@ mod tests {
     #[test]
     fn logo_spells_the_product_name() {
         let header = brand_header("dbg-test", true);
-        assert_eq!(header.lines().count(), 8);
+        assert_eq!(header.lines().count(), 9);
         assert!(header.contains("INCREMENTAL DISTRIBUTION DEBUG CONSOLE"));
         assert!(header.contains("dbg-test"));
         assert!(!header.contains("\x1b["));
@@ -1098,8 +1160,10 @@ mod tests {
     fn colored_branding_uses_truecolor_and_patch_map_colors() {
         let header = brand_header("dbg-test", false);
         assert!(header.contains("\x1b[38;2;"));
-        assert!(header.contains("255;255;255m█"));
-        assert!(header.contains("205;205;220m█"));
+        assert!(header.contains("252;250;255m"));
+        assert!(header.contains("224;39;246m"));
+        assert_eq!(vertical_brand_color(0, 5), BRAND_TOP);
+        assert_eq!(vertical_brand_color(5, 5), BRAND_BOTTOM);
 
         let row = colorize_patch_row("game.pak [RRDD] reuse 50%", false);
         assert!(row.contains("105;61;255mR"));
