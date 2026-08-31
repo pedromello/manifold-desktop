@@ -7,8 +7,10 @@ use std::{
 };
 
 mod butler;
+pub mod debug;
 mod installer;
 pub mod publisher;
+mod pwr_inspector;
 
 const ENVIRONMENTS: [&str; 3] = ["development", "staging", "production"];
 const API_PATH: &str = "/api/v1";
@@ -949,10 +951,24 @@ fn update_plan_url(
 
 #[tauri::command]
 async fn resolve_update_plan(
+    app: tauri::AppHandle,
     state: tauri::State<'_, ApiState>,
     game_slug: String,
     source_release_id: String,
 ) -> Result<installer::UpdatePlan, DistributionError> {
+    debug::event(
+        &app,
+        debug::DebugScope::Api,
+        debug::DebugEventKind::ApiCall,
+        Some("resolve_update"),
+        Some("Asking the API whether this installation can use an incremental patch."),
+        None,
+        [
+            ("method".into(), "GET".into()),
+            ("route".into(), "/api/v1/games/:slug/updates/latest".into()),
+            ("game_slug".into(), game_slug.clone()),
+        ],
+    );
     let client = state
         .client()
         .map_err(DistributionError::service_unavailable)?;
@@ -960,14 +976,80 @@ async fn resolve_update_plan(
     let response = send(&client, client.get(url))
         .await
         .map_err(DistributionError::service_unavailable)?;
-    distribution_api_json(response).await
+    let plan: installer::UpdatePlan = distribution_api_json(response).await?;
+    let (strategy, source_version, target_version, reason, patch_bytes, full_bytes) = match &plan {
+        installer::UpdatePlan::Patch {
+            source,
+            target,
+            patch,
+            ..
+        } => (
+            "PATCH",
+            source.version.as_str(),
+            target.version.as_str(),
+            None,
+            Some(patch.patch.size_bytes.as_str()),
+            Some(target.compressed_size_bytes.as_str()),
+        ),
+        installer::UpdatePlan::Full {
+            source,
+            target,
+            reason,
+            ..
+        } => (
+            "FULL",
+            source.version.as_str(),
+            target.version.as_str(),
+            Some(reason.as_str()),
+            None,
+            Some(target.compressed_size_bytes.as_str()),
+        ),
+    };
+    let mut fields = vec![
+        ("strategy".into(), strategy.into()),
+        ("source_version".into(), source_version.into()),
+        ("target_version".into(), target_version.into()),
+    ];
+    if let Some(reason) = reason {
+        fields.push(("reason".into(), reason.into()));
+    }
+    if let Some(bytes) = patch_bytes {
+        fields.push(("patch_bytes".into(), bytes.into()));
+    }
+    if let Some(bytes) = full_bytes {
+        fields.push(("full_archive_bytes".into(), bytes.into()));
+    }
+    debug::event(
+        &app,
+        debug::DebugScope::Api,
+        debug::DebugEventKind::Decision,
+        Some("resolve_update"),
+        Some(if strategy == "PATCH" {
+            "The API selected PATCH. The full archive remains available as an automatic fallback."
+        } else {
+            "The API selected FULL for this source release and target."
+        }),
+        None,
+        fields,
+    );
+    Ok(plan)
 }
 
 #[tauri::command]
 async fn prepare_update_plan(
+    app: tauri::AppHandle,
     state: tauri::State<'_, ApiState>,
     update: installer::UpdatePlan,
 ) -> Result<installer::UpdateExecutionPlan, DistributionError> {
+    debug::event(
+        &app,
+        debug::DebugScope::Api,
+        debug::DebugEventKind::ApiCall,
+        Some("authorize_update"),
+        Some("Resolving the manifest and independent short-lived download authorizations."),
+        None,
+        [("signed_urls".into(), "redacted by design".into())],
+    );
     let client = state
         .client()
         .map_err(DistributionError::service_unavailable)?;
@@ -1052,6 +1134,21 @@ async fn prepare_update_plan(
             .map_err(DistributionError::service_unavailable)?,
     )
     .await?;
+    debug::event(
+        &app,
+        debug::DebugScope::Api,
+        debug::DebugEventKind::Complete,
+        Some("authorize_update"),
+        Some("Update authorizations are ready. URLs were intentionally omitted from diagnostics."),
+        None,
+        [
+            (
+                "patch_authorized".into(),
+                patch_downloads.is_some().to_string(),
+            ),
+            ("fallback_authorized".into(), "true".into()),
+        ],
+    );
     Ok(installer::UpdateExecutionPlan {
         update,
         manifest,
@@ -1063,9 +1160,11 @@ async fn prepare_update_plan(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let api_state = ApiState::new().expect("failed to initialize the Manifold API client");
+    let debug_runtime = debug::DebugRuntime::from_environment();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(api_state)
+        .manage(debug_runtime)
         .manage(installer::InstallationManager::new())
         .manage(publisher::PublishUploadManager::new())
         .invoke_handler(tauri::generate_handler![

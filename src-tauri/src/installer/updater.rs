@@ -1,5 +1,6 @@
 use super::*;
 use crate::butler::{Butler, WHARF_ALGORITHM, WHARF_FORMAT_VERSION};
+use crate::debug::{self, DebugEventKind, DebugScope};
 
 const PENDING_UPDATES_FILE: &str = "pending-updates.json";
 
@@ -641,6 +642,19 @@ async fn patch_update(
     })
     .await?;
     download_update_file(&downloads.signature, &signature_path, cancellation, |_| {}).await?;
+    debug::event(
+        app,
+        DebugScope::Downloader,
+        DebugEventKind::Complete,
+        Some("downloading_update"),
+        Some("The .pwr payload and its independent canonical signature are downloaded."),
+        Some((total, total, "bytes")),
+        [
+            ("transport".into(), "single patch payload".into()),
+            ("signed_urls".into(), "not recorded".into()),
+        ],
+    );
+    crate::pwr_inspector::emit_debug_analysis(app, &patch_path, "downloaded_patch_operations");
     ensure_not_cancelled(cancellation)?;
     let (destination, stage, backup) = derived_update_paths(current)?;
     if stage.exists() {
@@ -655,6 +669,17 @@ async fn patch_update(
         UpdateJournalPhase::Applying,
     )?;
     copy_tree(&destination, &stage, cancellation)?;
+    debug::event(
+        app,
+        DebugScope::Updater,
+        DebugEventKind::Stage,
+        Some("staging"),
+        Some(
+            "Copied the active installation into isolated staging; the playable copy is untouched.",
+        ),
+        None,
+        [("active_installation".into(), "preserved".into())],
+    );
     let butler_stage = stage
         .parent()
         .ok_or("invalid update staging path")?
@@ -708,6 +733,18 @@ async fn patch_update(
         None,
     );
     butler.verify(&signature_path, &stage, cancellation)?;
+    debug::event(
+        app,
+        DebugScope::Verifier,
+        DebugEventKind::Complete,
+        Some("verifying_update"),
+        Some("Staging matches the canonical target signature. Safe activation can begin."),
+        Some((100, 100, "percent")),
+        [(
+            "target_version".into(),
+            execution.update.target().version.clone(),
+        )],
+    );
     if !stage
         .join(safe_relative_path(&execution.manifest.entrypoint)?)
         .is_file()
@@ -789,6 +826,18 @@ pub async fn update_game(
                         Err(error)
                     }
                     Err(_) => {
+                        debug::event(
+                            &app,
+                            DebugScope::Updater,
+                            DebugEventKind::Warning,
+                            Some("full_fallback"),
+                            Some("Incremental apply could not complete. Preserving the installed version and switching to the full archive automatically."),
+                            None,
+                            [
+                                ("strategy".into(), "FULL".into()),
+                                ("previous_installation".into(), "preserved".into()),
+                            ],
+                        );
                         cleanup_patch_attempt(&app, &current, &patch.id);
                         full_update(&app, &title, &plan, &current, &cancellation, true).await
                     }
