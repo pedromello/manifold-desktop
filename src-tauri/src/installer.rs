@@ -16,6 +16,8 @@ use std::{
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
+use crate::debug::{self, DebugEventKind, DebugScope};
+
 pub(crate) mod updater;
 pub use updater::{UpdateExecutionPlan, UpdatePlan};
 
@@ -978,6 +980,35 @@ fn emit_progress(
     total_bytes: u64,
     error: Option<String>,
 ) {
+    let kind = if error.is_some() {
+        DebugEventKind::Error
+    } else if phase == "installed" {
+        DebugEventKind::Complete
+    } else if total_bytes > 0 {
+        DebugEventKind::Progress
+    } else {
+        DebugEventKind::Stage
+    };
+    debug::event(
+        app,
+        if phase.contains("verif") {
+            DebugScope::Verifier
+        } else if phase.contains("download") || phase == "full_fallback" {
+            DebugScope::Downloader
+        } else {
+            DebugScope::Updater
+        },
+        kind,
+        Some(phase),
+        error.as_ref().map(|_| {
+            "The operation reported an error. Sensitive details remain in the app diagnostics."
+        }),
+        (total_bytes > 0).then_some((downloaded_bytes, total_bytes, "bytes")),
+        [
+            ("game_slug".into(), plan.game_slug.clone()),
+            ("target_version".into(), plan.release.version.clone()),
+        ],
+    );
     let _ = app.emit(
         "installation-progress",
         InstallationProgress {
@@ -1327,7 +1358,11 @@ fn verify_archive_checksum(path: &Path, expected: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn extract_zip(archive_path: &Path, destination: &Path, maximum_size: u64) -> Result<(), String> {
+pub(crate) fn extract_zip(
+    archive_path: &Path,
+    destination: &Path,
+    maximum_size: u64,
+) -> Result<(), String> {
     let file = File::open(archive_path)
         .map_err(|error| format!("could not open artifact archive: {error}"))?;
     let mut archive = zip::ZipArchive::new(file)

@@ -112,6 +112,8 @@ it('shows owned games with their acquisition outlet', async () => {
   ).toBeInTheDocument();
   expect(screen.getByText('Acquired via Cozy Outlet')).toBeInTheDocument();
   expect(screen.getByText('Access confirmed')).toBeInTheDocument();
+  expect(screen.getByText('Signed in as pedro')).toBeInTheDocument();
+  expect(screen.queryByText('pedro@example.com')).not.toBeInTheDocument();
   expect(invoke).toHaveBeenCalledWith('list_library');
 });
 

@@ -181,3 +181,33 @@ it('cancels an active upload and returns to the retryable review state', async (
     await screen.findByRole('button', { name: 'Try again' }),
   ).toBeInTheDocument();
 });
+
+it('shows indeterminate feedback while processing the archive locally', async () => {
+  seedManifestDraft();
+  const publishing = adapter();
+  publishing.publish = vi.fn(
+    async (_gameSlug, releaseId, _archivePath, _manifest, onProgress) => {
+      onProgress({
+        releaseId,
+        phase: 'analyzing',
+        uploadedBytes: 0,
+        totalBytes: 0,
+        attempt: 1,
+      });
+      return new Promise<never>(() => {});
+    },
+  );
+
+  renderStoredDraft(publishing);
+  fireEvent.click(await screen.findByRole('button', { name: 'Send version' }));
+
+  expect(
+    await screen.findByRole('heading', { name: 'Processing game file' }),
+  ).toBeInTheDocument();
+  const progress = screen.getByRole('progressbar', {
+    name: 'Game file processing',
+  });
+  expect(progress).not.toHaveAttribute('aria-valuenow');
+  expect(screen.getByText('Processing on this computer')).toBeInTheDocument();
+  expect(screen.queryByText('0 B of 0 B')).not.toBeInTheDocument();
+});

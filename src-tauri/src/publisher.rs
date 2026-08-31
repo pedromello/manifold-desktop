@@ -25,7 +25,11 @@ use tokio::{
     io::{AsyncReadExt, BufReader},
 };
 
-use crate::{api_base_url, ApiState};
+use crate::{
+    api_base_url,
+    debug::{self, DebugEventKind, DebugScope},
+    ApiState,
+};
 
 const MAX_ARCHIVE_FILES: usize = 100_000;
 const MAX_INSTALLED_SIZE_BYTES: u64 = 200 * 1024 * 1024 * 1024;
@@ -999,6 +1003,33 @@ fn emit_progress<R: Runtime>(
     total_bytes: u64,
     attempt: u32,
 ) {
+    if total_bytes > 0 {
+        debug::event(
+            app,
+            DebugScope::Publisher,
+            DebugEventKind::Progress,
+            Some(phase),
+            None,
+            Some((uploaded_bytes, total_bytes, "bytes")),
+            [
+                ("release_id".into(), release_id.into()),
+                ("attempt".into(), attempt.to_string()),
+            ],
+        );
+    } else {
+        debug::event(
+            app,
+            DebugScope::Publisher,
+            DebugEventKind::Stage,
+            Some(phase),
+            Some(publisher_phase_message(phase)),
+            None,
+            [
+                ("release_id".into(), release_id.into()),
+                ("attempt".into(), attempt.to_string()),
+            ],
+        );
+    }
     let _ = app.emit(
         "publisher-progress",
         PublisherProgress {
@@ -1010,6 +1041,20 @@ fn emit_progress<R: Runtime>(
             temporary_bytes_required: None,
         },
     );
+}
+
+fn publisher_phase_message(phase: &str) -> &'static str {
+    match phase {
+        "analyzing" => "Inspecting the release archive and resolving its predecessor.",
+        "preparing_update" => "Preparing the incremental update payload.",
+        "validating_patch" => "Rebuilding the target and validating its Wharf signature.",
+        "uploading_patch" => "Uploading the patch payload and canonical signature.",
+        "confirming" => "Confirming immutable objects with the Manifold API.",
+        "published" => "Release publication completed.",
+        "failed" => "Release publication stopped with an error.",
+        "cancelled" => "Release publication was cancelled safely.",
+        _ => "Publisher moved to the next stage.",
+    }
 }
 
 #[derive(Default)]
@@ -1399,6 +1444,21 @@ pub(crate) async fn publish_release(
             0,
             0,
             0,
+        );
+        debug::event(
+            &app,
+            DebugScope::Publisher,
+            DebugEventKind::Error,
+            Some("publication_error"),
+            Some(&format!(
+                "Publication failed [{}]: {}",
+                error.code, error.message
+            )),
+            None,
+            [
+                ("error_code".into(), error.code.clone()),
+                ("retryable".into(), error.retryable.to_string()),
+            ],
         );
     }
     result

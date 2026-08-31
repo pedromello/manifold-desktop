@@ -1,5 +1,6 @@
 use super::*;
 use crate::butler::{Butler, WHARF_ALGORITHM, WHARF_FORMAT_VERSION};
+use crate::debug::{self, DebugEventKind, DebugScope};
 use futures_util::StreamExt;
 use serde_json::from_slice;
 use sha2::{Digest, Sha256};
@@ -119,6 +120,21 @@ fn valid_sha256(value: &str) -> bool {
             .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
 }
 
+fn extract_wharf_tree(
+    archive: &Path,
+    destination: &Path,
+    installed_size: u64,
+) -> Result<(), PublisherError> {
+    if destination.exists() {
+        fs::remove_dir_all(destination)
+            .map_err(|_| PublisherError::unavailable("could not reset Wharf input tree"))?;
+    }
+    fs::create_dir_all(destination)
+        .map_err(|_| PublisherError::unavailable("could not create Wharf input tree"))?;
+    crate::installer::extract_zip(archive, destination, installed_size)
+        .map_err(|error| PublisherError::new("PATCH_EXTRACTION_FAILED", error, true))
+}
+
 fn select_source_release(
     releases: &[PublisherReleaseApi],
     target_release_id: &str,
@@ -213,6 +229,15 @@ async fn download_source<R: Runtime>(
         .map_err(|_| PublisherError::unavailable("could not create publisher cache"))?;
     let cache = root.join(format!("{}.zip", artifact.id));
     if cache.is_file() && sha256_file(&cache)? == expected {
+        debug::event(
+            app,
+            DebugScope::Publisher,
+            DebugEventKind::Decision,
+            Some("source_build"),
+            Some("Using the verified cached predecessor archive."),
+            None,
+            [("cache".into(), "verified SHA-256 hit".into())],
+        );
         return Ok(cache);
     }
     if cache.exists() {
@@ -297,6 +322,14 @@ async fn download_source<R: Runtime>(
         file.write_all(&chunk)
             .await
             .map_err(|_| PublisherError::unavailable("could not save preceding release"))?;
+        debug::progress(
+            app,
+            DebugScope::Downloader,
+            "downloading_predecessor",
+            received,
+            total,
+            "bytes",
+        );
     }
     file.flush()
         .await
@@ -402,6 +435,30 @@ fn emit_patch_progress<R: Runtime>(
     total_bytes: u64,
     temporary_bytes_required: Option<u64>,
 ) {
+    debug::event(
+        app,
+        DebugScope::Publisher,
+        if total_bytes > 0 {
+            DebugEventKind::Progress
+        } else {
+            DebugEventKind::Stage
+        },
+        Some(phase),
+        if total_bytes == 0 {
+            Some(match phase {
+                "preparing_update" => "Comparing the previous and target builds with Wharf.",
+                "validating_patch" => "Applying the generated patch to a temporary rebuild.",
+                "uploading_patch" => "Sending the incremental payload and signature.",
+                _ => "Incremental publication advanced to the next stage.",
+            })
+        } else {
+            None
+        },
+        (total_bytes > 0).then_some((uploaded_bytes, total_bytes, "bytes")),
+        temporary_bytes_required
+            .map(|bytes| vec![("temporary_space_bytes".into(), bytes.to_string())])
+            .unwrap_or_default(),
+    );
     let _ = app.emit(
         "publisher-progress",
         PublisherProgress {
@@ -524,6 +581,15 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
     let Some((source, artifact)) =
         source_release(client, game_slug, target_release_id, platform, architecture).await?
     else {
+        debug::event(
+            app,
+            DebugScope::Publisher,
+            DebugEventKind::Decision,
+            Some("source_build"),
+            Some("No compatible predecessor exists. This first release is full-only."),
+            None,
+            [("strategy".into(), "FULL".into())],
+        );
         return Ok(());
     };
     let old_archive = download_source(app, client, &artifact, &cancellation).await?;
@@ -557,6 +623,8 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
     let recovery_path = work.join("recovery.json");
     let patch_path = work.join("update.pwr");
     let signature_path = work.join("update.pwr.sig");
+    let source_tree = work.join("source-tree");
+    let target_tree = work.join("target-tree");
     let rebuilt = work.join("rebuilt");
     let apply_stage = work.join("apply-stage");
     let required_space = required_temporary_space(
@@ -620,6 +688,24 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
         recovery = None;
     }
 
+    debug::event(
+        app,
+        DebugScope::Publisher,
+        DebugEventKind::Stage,
+        Some("preparing_patch"),
+        Some("Extracting the verified source and target ZIPs into isolated Wharf input trees."),
+        None,
+        [("workspace".into(), "isolated temporary directories".into())],
+    );
+    extract_wharf_tree(&old_archive, &source_tree, source_installed)?;
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(PublisherError::cancelled());
+    }
+    extract_wharf_tree(target_archive, &target_tree, target_installed_size)?;
+    if cancellation.load(Ordering::Relaxed) {
+        return Err(PublisherError::cancelled());
+    }
+
     if recovery.is_none() {
         for path in [&patch_path, &signature_path] {
             if path.exists() {
@@ -637,7 +723,7 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
         let started = Instant::now();
         let butler = Butler::locate(app).map_err(PublisherError::unavailable)?;
         butler
-            .diff(&old_archive, target_archive, &patch_path, &cancellation)
+            .diff(&source_tree, &target_tree, &patch_path, &cancellation)
             .map_err(|error| PublisherError::new("PATCH_GENERATION_FAILED", error, true))?;
         if !signature_path.is_file() {
             return Err(PublisherError::new(
@@ -653,6 +739,35 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
             .map_err(|_| PublisherError::unavailable("generated signature disappeared"))?
             .len();
         let signature_sha = sha256_file(&signature_path)?;
+        let ratio = patch_size
+            .saturating_mul(10_000)
+            .checked_div(target_compressed_size)
+            .unwrap_or(0);
+        debug::event(
+            app,
+            DebugScope::Publisher,
+            DebugEventKind::Decision,
+            Some("patch_analysis"),
+            Some(
+                "Wharf emitted one patch payload. BLOCK_RANGE data is reused locally; DATA operations carry fresh bytes.",
+            ),
+            None,
+            [
+                ("source_version".into(), source.version.clone()),
+                ("patch_bytes".into(), patch_size.to_string()),
+                (
+                    "full_archive_bytes".into(),
+                    target_compressed_size.to_string(),
+                ),
+                (
+                    "patch_ratio_percent".into(),
+                    format!("{}.{:02}", ratio / 100, ratio % 100),
+                ),
+                ("wharf_block_size_bytes".into(), "65536".into()),
+                ("network_payload".into(), "single .pwr file".into()),
+            ],
+        );
+        crate::pwr_inspector::emit_debug_analysis(app, &patch_path, "patch_operations");
         let mut generated = PatchRecovery {
             schema_version: PATCH_RECOVERY_SCHEMA_VERSION,
             release_id: target_release_id.into(),
@@ -677,6 +792,18 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
             phase: PatchRecoveryPhase::Generated,
         };
         if !patch_within_limit(patch_size, target_compressed_size) {
+            debug::event(
+                app,
+                DebugScope::Publisher,
+                DebugEventKind::Decision,
+                Some("patch_analysis"),
+                Some("The patch exceeds the inclusive 80% limit; the release remains full-only."),
+                None,
+                [
+                    ("strategy".into(), "FULL".into()),
+                    ("reason".into(), "PATCH_EXCEEDS_SIZE_LIMIT".into()),
+                ],
+            );
             generated.phase = PatchRecoveryPhase::SkippedSizeLimit;
             write_recovery(&recovery_path, &generated)?;
             return Ok(());
@@ -712,7 +839,7 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
             .apply_to(
                 &patch_path,
                 &signature_path,
-                &old_archive,
+                &source_tree,
                 &rebuilt,
                 &apply_stage,
                 &cancellation,
@@ -722,6 +849,18 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
             .verify(&signature_path, &rebuilt, &cancellation)
             .map_err(|error| PublisherError::new("PATCH_VERIFICATION_FAILED", error, true))?;
         recovery.phase = PatchRecoveryPhase::Validated;
+        debug::event(
+            app,
+            DebugScope::Verifier,
+            DebugEventKind::Complete,
+            Some("validating_patch"),
+            Some("The patch rebuilt the target and its canonical signature verified successfully."),
+            None,
+            [(
+                "activation".into(),
+                "not performed during publication".into(),
+            )],
+        );
         write_recovery(&recovery_path, &recovery)?;
     }
 
@@ -803,6 +942,19 @@ pub(super) async fn prepare_and_confirm_patch<R: Runtime>(
         ));
     }
     recovery.phase = PatchRecoveryPhase::Confirmed;
+    debug::event(
+        app,
+        DebugScope::Api,
+        DebugEventKind::Complete,
+        Some("confirm_patch"),
+        Some("The API confirmed the immutable patch and signature as READY."),
+        None,
+        [
+            ("status".into(), "READY".into()),
+            ("algorithm".into(), WHARF_ALGORITHM.into()),
+            ("format_version".into(), WHARF_FORMAT_VERSION.into()),
+        ],
+    );
     write_recovery(&recovery_path, &recovery)?;
     Ok(())
 }

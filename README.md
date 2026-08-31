@@ -32,6 +32,8 @@ The vendored [distribution API v1 contract](src/contracts/desktop-v1.ts) and [in
 
 The UI ships with `pt-BR` and `en-US`. It initially follows the operating-system language and stores the user's explicit selection locally. New UI strings belong in both resource trees in `src/i18n.ts`.
 
+To observe incremental publication and updates in a separate, sanitized terminal, use `npm run desktop:debug`. See the [incremental distribution debug console guide](docs/debug-console.md) for the ASCII dashboard, replay files, and account-free demos.
+
 ## Validation
 
 ```sh

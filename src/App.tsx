@@ -508,7 +508,6 @@ function AppShell() {
               </span>
               <div>
                 <strong>{user.username}</strong>
-                <span>{user.email}</span>
               </div>
               <button onClick={handleLogout}>{t('account.signOut')}</button>
             </div>

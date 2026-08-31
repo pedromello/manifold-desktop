@@ -10,6 +10,8 @@ use std::{
 };
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::debug::{self, DebugEventKind, DebugRuntime, DebugScope};
+
 pub const BUTLER_VERSION: &str = "15.30.0";
 pub const WHARF_ALGORITHM: &str = "WHARF";
 pub const WHARF_FORMAT_VERSION: &str = "1";
@@ -166,6 +168,7 @@ fn sha256_file(path: &Path) -> Result<String, String> {
 #[derive(Clone, Debug)]
 pub struct Butler {
     executable: PathBuf,
+    debug: DebugRuntime,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -175,7 +178,11 @@ struct ButlerDiagnostics {
     stderr_bytes: usize,
 }
 
-fn read_structured_output(reader: impl Read, structured: bool) -> ButlerDiagnostics {
+fn read_structured_output(
+    reader: impl Read,
+    structured: bool,
+    debug: Option<(DebugRuntime, String)>,
+) -> ButlerDiagnostics {
     let mut diagnostics = ButlerDiagnostics::default();
     for line in BufReader::new(reader).lines().map_while(Result::ok) {
         // Keep draining the pipe after the diagnostic cap so Butler can never
@@ -208,9 +215,47 @@ fn read_structured_output(reader: impl Read, structured: bool) -> ButlerDiagnost
                         .or_else(|| value.as_u64().and_then(|value| u8::try_from(value).ok()))
                 })
                 .filter(|value| *value <= 100);
+            if let (Some(percentage), Some((runtime, operation))) =
+                (diagnostics.progress, debug.as_ref())
+            {
+                runtime.progress(
+                    DebugScope::Butler,
+                    operation,
+                    u64::from(percentage),
+                    100,
+                    "percent",
+                );
+            }
+        } else if let (Some(message), Some((runtime, operation))) = (
+            value.get("message").and_then(serde_json::Value::as_str),
+            debug.as_ref(),
+        ) {
+            if let Some(message) = safe_butler_message(message) {
+                runtime.emit(
+                    DebugScope::Butler,
+                    DebugEventKind::Message,
+                    Some(operation),
+                    Some(&message),
+                    None,
+                    [],
+                );
+            }
         }
     }
     diagnostics
+}
+
+fn safe_butler_message(message: &str) -> Option<String> {
+    let message = message.replace(['\r', '\n'], " ");
+    let lower = message.to_ascii_lowercase();
+    if message.contains(['\\', '/'])
+        || lower.contains("://")
+        || lower.contains("token")
+        || lower.contains("authorization")
+    {
+        return None;
+    }
+    Some(message.chars().take(512).collect())
 }
 
 fn read_controlled_stderr(reader: impl Read) -> usize {
@@ -247,12 +292,16 @@ impl Butler {
         }
         Ok(Self {
             executable: root.join(pin.executable),
+            debug: debug::runtime(app),
         })
     }
 
     #[cfg(test)]
     fn from_executable(executable: PathBuf) -> Self {
-        Self { executable }
+        Self {
+            executable,
+            debug: DebugRuntime::default(),
+        }
     }
 
     fn diff_arguments(old: &Path, new: &Path, patch: &Path) -> Vec<String> {
@@ -367,6 +416,20 @@ impl Butler {
         cancellation: &AtomicBool,
         structured: bool,
     ) -> Result<ButlerDiagnostics, String> {
+        let operation = args
+            .iter()
+            .find(|argument| matches!(argument.as_str(), "diff" | "apply" | "verify"))
+            .map(String::as_str)
+            .unwrap_or("process")
+            .to_string();
+        self.debug.emit(
+            DebugScope::Butler,
+            DebugEventKind::Stage,
+            Some(&operation),
+            Some("Starting the pinned offline Butler sidecar."),
+            None,
+            [("butler_version".into(), BUTLER_VERSION.into())],
+        );
         if cancellation.load(Ordering::Relaxed) {
             return Err("installation cancelled".into());
         }
@@ -390,7 +453,11 @@ impl Butler {
             .map_err(|error| format!("could not start pinned Butler: {error}"))?;
         let stdout = child.stdout.take().ok_or("could not read Butler output")?;
         let stderr = child.stderr.take().ok_or("could not read Butler errors")?;
-        let output_reader = thread::spawn(move || read_structured_output(stdout, structured));
+        let debug = self.debug.clone();
+        let reader_operation = operation.clone();
+        let output_reader = thread::spawn(move || {
+            read_structured_output(stdout, structured, Some((debug, reader_operation)))
+        });
         let error_reader = thread::spawn(move || read_controlled_stderr(stderr));
         loop {
             if cancellation.load(Ordering::Relaxed) {
@@ -398,6 +465,14 @@ impl Butler {
                 let _ = child.wait();
                 let _ = output_reader.join();
                 let _ = error_reader.join();
+                self.debug.emit(
+                    DebugScope::Butler,
+                    DebugEventKind::Warning,
+                    Some(&operation),
+                    Some("Butler was cancelled; the active installation was not changed."),
+                    None,
+                    [],
+                );
                 return Err("installation cancelled".into());
             }
             if let Some(status) = child
@@ -407,8 +482,27 @@ impl Butler {
                 let mut diagnostics = output_reader.join().unwrap_or_default();
                 diagnostics.stderr_bytes = error_reader.join().unwrap_or(0);
                 return if status.success() {
+                    self.debug.emit(
+                        DebugScope::Butler,
+                        DebugEventKind::Complete,
+                        Some(&operation),
+                        Some("Butler completed successfully."),
+                        Some((100, 100, "percent")),
+                        [("events".into(), diagnostics.event_count.to_string())],
+                    );
                     Ok(diagnostics)
                 } else {
+                    self.debug.emit(
+                        DebugScope::Butler,
+                        DebugEventKind::Error,
+                        Some(&operation),
+                        Some("Butler exited unsuccessfully; no sensitive stderr was forwarded."),
+                        None,
+                        [
+                            ("events".into(), diagnostics.event_count.to_string()),
+                            ("stderr_bytes".into(), diagnostics.stderr_bytes.to_string()),
+                        ],
+                    );
                     Err(format!(
                         "Butler exited unsuccessfully (progress: {:?}, events: {}, stderr bytes: {})",
                         diagnostics.progress, diagnostics.event_count, diagnostics.stderr_bytes
@@ -494,9 +588,20 @@ mod tests {
 {"type":"progress","percentage":"80"}
 not-json
 "#;
-        let diagnostics = read_structured_output(&input[..], true);
+        let diagnostics = read_structured_output(&input[..], true, None);
         assert_eq!(diagnostics.progress, Some(80));
         assert_eq!(diagnostics.event_count, 2);
+    }
+
+    #[test]
+    fn debug_forwarding_rejects_butler_paths_urls_and_tokens() {
+        assert_eq!(
+            safe_butler_message("Re-used 92.4% of old, added 38.2 MiB fresh data").as_deref(),
+            Some("Re-used 92.4% of old, added 38.2 MiB fresh data")
+        );
+        assert!(safe_butler_message(r"Reading C:\private\game.zip").is_none());
+        assert!(safe_butler_message("GET https://storage.test/signed").is_none());
+        assert!(safe_butler_message("authorization token refreshed").is_none());
     }
 
     #[test]
@@ -505,7 +610,7 @@ not-json
 
         let input = (0..600).map(|_| "{\"type\":\"log\"}\n").collect::<String>();
         let mut reader = Cursor::new(input.as_bytes());
-        let diagnostics = read_structured_output(&mut reader, true);
+        let diagnostics = read_structured_output(&mut reader, true, None);
         assert_eq!(diagnostics.event_count, 512);
         assert_eq!(reader.position(), input.len() as u64);
 
@@ -568,6 +673,11 @@ not-json
         fs::write(old.join("game.txt"), b"version one").unwrap();
         fs::write(new.join("game.txt"), b"version two").unwrap();
         fs::write(new.join("new-file.txt"), b"added").unwrap();
+        let old_asset = vec![b'a'; 4 * 64 * 1024];
+        let mut new_asset = old_asset.clone();
+        new_asset[64 * 1024..2 * 64 * 1024].fill(b'b');
+        fs::write(old.join("asset.bin"), old_asset).unwrap();
+        fs::write(new.join("asset.bin"), new_asset).unwrap();
         let patch = directory.path().join("update.pwr");
         let signature = directory.path().join("update.pwr.sig");
         let cancellation = AtomicBool::new(false);
@@ -576,6 +686,19 @@ not-json
         butler.diff(&old, &new, &patch, &cancellation).unwrap();
         assert!(patch.is_file());
         assert!(signature.is_file());
+        let analysis = crate::pwr_inspector::inspect_patch(&patch).unwrap();
+        assert_eq!(analysis.old_file_count, 2);
+        assert_eq!(analysis.new_file_count, 3);
+        assert!(analysis.reused_bytes > 0);
+        assert!(analysis.fresh_bytes > 0);
+        assert!(analysis.operation_count > 0);
+        let asset = analysis
+            .files
+            .iter()
+            .find(|file| file.path == "asset.bin")
+            .unwrap();
+        assert!(asset.block_map(8).contains('R'));
+        assert!(asset.block_map(8).contains('D'));
         butler
             .apply_to(&patch, &signature, &old, &rebuilt, &staging, &cancellation)
             .unwrap();
