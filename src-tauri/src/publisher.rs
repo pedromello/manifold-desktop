@@ -34,6 +34,8 @@ const MAX_COMPRESSION_RATIO: u64 = 200;
 const HASH_BUFFER_SIZE: usize = 128 * 1024;
 const UPLOAD_BUFFER_SIZE: usize = 256 * 1024;
 const AUTHORIZATION_SAFETY_WINDOW_SECONDS: i64 = 60;
+mod incremental;
+
 const MAX_AUTHORIZATION_REFRESHES: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -505,6 +507,7 @@ pub(crate) async fn update_release_draft(
     release_notes: Option<String>,
 ) -> Result<PublisherRelease, PublisherError> {
     validate_slug(&game_slug, "game")?;
+    crate::installer::validate_game_slug(&game_slug).map_err(PublisherError::invalid)?;
     if release_id.is_empty()
         || release_id.len() > 128
         || !release_id
@@ -984,6 +987,8 @@ struct PublisherProgress {
     uploaded_bytes: u64,
     total_bytes: u64,
     attempt: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temporary_bytes_required: Option<u64>,
 }
 
 fn emit_progress<R: Runtime>(
@@ -1002,6 +1007,7 @@ fn emit_progress<R: Runtime>(
             uploaded_bytes,
             total_bytes,
             attempt,
+            temporary_bytes_required: None,
         },
     );
 }
@@ -1215,6 +1221,7 @@ async fn publish_release_inner<R: Runtime>(
     app: &AppHandle<R>,
     api_client: &Client,
     release_id: &str,
+    game_slug: &str,
     archive_path: PathBuf,
     manifest: PublishManifest,
     cancellation: Arc<AtomicBool>,
@@ -1231,6 +1238,26 @@ async fn publish_release_inner<R: Runtime>(
     let mut authorization =
         request_upload_authorization(api_client, release_id, &declaration).await?;
     let artifact_id = authorization.artifact.id.clone();
+
+    incremental::prepare_and_confirm_patch(
+        app,
+        api_client,
+        incremental::PatchPreparation {
+            game_slug,
+            target_release_id: release_id,
+            platform: declaration.platform,
+            architecture: declaration.architecture,
+            target_archive: &inspection.archive_path,
+            target_compressed_size: total_bytes,
+            target_installed_size: declaration
+                .installed_size_bytes
+                .parse::<u64>()
+                .map_err(|_| PublisherError::unavailable("installed size is invalid"))?,
+            target_sha256: &declaration.sha256,
+        },
+        cancellation.clone(),
+    )
+    .await?;
 
     loop {
         if cancellation.load(Ordering::Relaxed) {
@@ -1316,6 +1343,7 @@ async fn publish_release_inner<R: Runtime>(
             "Manifold API returned an inconsistent publication result",
         ));
     }
+    incremental::complete_publication(app, release_id);
     emit_progress(
         app,
         release_id,
@@ -1333,9 +1361,11 @@ pub(crate) async fn publish_release(
     state: tauri::State<'_, ApiState>,
     manager: tauri::State<'_, PublishUploadManager>,
     release_id: String,
+    game_slug: String,
     archive_path: String,
     manifest: PublishManifest,
 ) -> Result<PublishConfirmation, PublisherError> {
+    crate::installer::validate_game_slug(&game_slug).map_err(PublisherError::invalid)?;
     if release_id.is_empty()
         || release_id.len() > 128
         || !release_id
@@ -1350,6 +1380,7 @@ pub(crate) async fn publish_release(
         &app,
         &api_client,
         &release_id,
+        &game_slug,
         PathBuf::from(archive_path),
         manifest,
         cancellation,

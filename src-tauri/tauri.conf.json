@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.manifoldpowered.desktop",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run sidecar:prepare && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run sidecar:prepare && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -26,6 +26,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png", "icons/icon.ico"]
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": {
+      "resources/butler/": "butler/",
+      "vendor/butler/v15.30.0/LICENSE": "licenses/butler-LICENSE",
+      "vendor/butler/v15.30.0/NOTICE.md": "licenses/butler-NOTICE.md"
+    }
   }
 }

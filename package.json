@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "sidecar:prepare": "node scripts/prepare-butler.mjs",
+    "sidecar:test": "node --test scripts/butler-target.node-test.mjs",
     "tauri": "tauri",
     "build": "tsc -b && vite build",
     "format": "prettier --check .",

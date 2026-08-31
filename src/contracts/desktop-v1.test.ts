@@ -5,7 +5,7 @@ import {
   desktopArchitectureSchema,
   desktopPlatformSchema,
   installManifestSchema,
-  libraryOutletSchema,
+  libraryItemSchema,
   requestOtpSchema,
 } from './desktop-v1';
 
@@ -41,15 +41,21 @@ describe('Manifold distribution API v1 contract', () => {
     ).toBe(false);
   });
 
-  it('attributes a library item to its acquisition outlet', () => {
+  it('accepts a library item with a compatible release', () => {
     expect(
-      libraryOutletSchema.parse({
-        id: 'e8b521ce-ed36-4d5a-86ab-bc96e151a504',
-        name: 'Strategos Void',
-        slug: 'strategos-void',
-        logo_url: null,
-      }).name,
-    ).toBe('Strategos Void');
+      libraryItemSchema.safeParse({
+        game: {
+          id: 'e8b521ce-ed36-4d5a-86ab-bc96e151a504',
+          slug: 'strategos-void',
+          title: 'Strategos Void',
+          description: '',
+          cover_url: null,
+          platforms: ['WINDOWS'],
+        },
+        acquired_at: '2026-08-28T12:00:00.000Z',
+        latest_compatible_release: null,
+      }).success,
+    ).toBe(true);
   });
   it('rejects install paths that escape the installation root', () => {
     const manifest = {

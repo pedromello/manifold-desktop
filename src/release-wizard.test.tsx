@@ -73,6 +73,7 @@ function adapter(): PublisherAdapter {
       .fn()
       .mockImplementation(
         async (
+          _gameSlug: string,
           releaseId: string,
           _archivePath: string,
           _manifest: unknown,

@@ -24,7 +24,7 @@ export function authorizationExpiresSoon(
 }
 
 export async function installWithAuthorizationRefresh(
-  adapter: DistributionAdapter,
+  adapter: Pick<DistributionAdapter, 'resolve' | 'latest'>,
   gameSlug: string,
   title: string,
   install: InstallInvoker,
