@@ -4,7 +4,7 @@ Tauri 2 desktop shell for Manifold, with a React, TypeScript, and Vite frontend.
 
 ## Prerequisites
 
-- Node.js 22 and npm 10 or newer
+- Node.js 24 and npm 10 or newer
 - Rust stable with `rustfmt` and `clippy`
 - [Tauri 2 platform prerequisites](https://v2.tauri.app/start/prerequisites/) (WebKitGTK development packages on Linux, Xcode tools on macOS, or WebView2 and C++ build tools on Windows)
 
